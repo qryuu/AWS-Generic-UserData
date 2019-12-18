@@ -4,7 +4,7 @@ A collection of AWS UserData for general use
 
 ## Overview お品書き
 
-### lamp-Initial_construction.bash
+### lamp-Initial_construction.sh
 
 Install Apache, php, mariaDB, redis for Amazon Linux2.
 Initialize mariaDB and create an empty DB with the name specified in “Setting value”.
