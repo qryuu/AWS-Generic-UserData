@@ -11,3 +11,11 @@ Initialize mariaDB and create an empty DB with the name specified in “Setting 
 
 Amazon Linux2 に対してApache,php,mariaDB,redisをインストールします。
 mariaDBの初期化を行い、”設定値” で指定された名前の空DBを作成します。
+
+### lamp-Initial_construction_wordpress.sh
+
+Install Wordpress for Amazon Linux2.
+Initialize mariaDB and create an Wordpress DB with the name specified in “Setting value”.
+
+Amazon Linux2 に対してWordpressをインストールします。
+mariaDBの初期化を行い、”設定値” で指定された名前のWordpressDBを作成します。

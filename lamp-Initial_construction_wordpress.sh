@@ -1,11 +1,13 @@
 #!/bin/bash
 #Setting value 設定値
-rdsnama= #RDSエンドポイントを入力
-rdsuser= #RDSMasterユーザ名
-rdspassword= #RDSMasterパスワード
-dbname= #DBname DB名
-dbuser= #DBUserName DBユーザ名
-dbpassword= #DBUserPassqword DBユーザパスワード
+usedb=$1 #local or RDS
+rdsnama=$2 #RDSエンドポイントを入力
+rdsuser=$3 #RDSMasterユーザ名
+rdspassword=$4 #RDSMasterパスワード
+dbname=wpdb #DBname DB名
+dbuser=wpuser #DBUserName DBユーザ名
+dbpassword=wppass #DBUserPassqword DBユーザパスワード
+myip=`curl -s http://169.254.169.254/latest/meta-data/public-ipv4`
 
 ##Package installation パッケージインストール
 yum update -y
@@ -14,6 +16,7 @@ yum install  httpd mariadb mariadb-server php-gd php-mbstring php-intl php-pecl-
 yum update -y
 
 ##maria db Start mariadb起動
+if [ ${usedb} = "local" ];then
 systemctl start mariadb.service
 
 ##maria root Random password generation ランダムパスワード生成
@@ -38,16 +41,45 @@ dbrootpass=`dbrootpass`
 echo password = ${dbrootpass} >> /home/ec2-user/my.cnf
 echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@localhost identified by '${dbpassword}';" > /tmp/create.sql
 mysql --defaults-extra-file=/home/ec2-user/my.cnf < /tmp/create.sql
+fi
+##WordPress インストール
+cd /home/ec2-user/
+curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+chmod +x wp-cli.phar
+mv wp-cli.phar /usr/local/bin/wp
+chown apache:apache /var/www/html/
+sudo -u apache /usr/local/bin/wp core download --locale=ja --path=/var/www/html
+if [ ${usedb} = "local" ];then
+sudo -u apache /usr/local/bin/wp core config --dbname=$dbname --dbuser=$dbuser --dbpass=$dbpassword --dbhost='localhost' --path=/var/www/html
+else
+sudo -u apache /usr/local/bin/wp core config --dbname=$dbname --dbuser=$rdsuser --dbpass=$rdspassword --dbhost=$rdsnama --path=/var/www/html
+fi
 
-##WordPress ダウンロード
-wget https://ja.wordpress.org/latest-ja.tar.gz -p /var/www/
+##DB作成
+if [ ${usedb} = "local" ];then
+echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@localhost identified by '${dbpassword}';" > /tmp/create.sql
+mysql --defaults-extra-file=/home/ec2-user/my.cnf < /tmp/create.sql
+else
+echo [mysql] >> /home/ec2-user/my.cnf 
+echo host = $rdsnama >> /home/ec2-user/my.cnf
+echo user = $rdsuser >> /home/ec2-user/my.cnf
+echo password =  $rdspassword >> /home/ec2-user/my.cnf
+echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@'%' identified by '${dbpassword}';" > /tmp/create.sql
+mysql --defaults-extra-file=/home/ec2-user/my.cnf < /tmp/create.sql
 
+##Wordpress 初期作成
+sudo -u apache /usr/local/bin/wp db create --path=/var/www/html
+sudo -u apache /usr/local/bin/wp core install --url=$myip --title='WordPress' --admin_name=$dbuser --admin_password=$dbpassword --admin_email='wordpress@example.net'  --path=/var/www/html
 
+cat << EOS | sudo tee /etc/httpd/conf.d/wordpress.conf
+<Directory "/var/www/html">
+    AllowOverride All
+</Directory>
+EOS
 
 ##Auto start setting 自動起動設定
 systemctl enable httpd.service
 systemctl enable mariadb.service
-systemctl enable redis.service
 
 ##OS Reboot OS再起動
 reboot
