@@ -1,12 +1,12 @@
 #!/bin/bash
 #Setting value 設定値
-usedb=$1 #local or RDS
-rdsnama=$2 #RDSエンドポイントを入力
-rdsuser=$3 #RDSMasterユーザ名
-rdspassword=$4 #RDSMasterパスワード
-dbname=wpdb #DBname DB名
-dbuser=wpuser #DBUserName DBユーザ名
-dbpassword=wppass #DBUserPassqword DBユーザパスワード
+usedb=${1:-locak} #local or RDS
+dbname=${2:-wpdb} #DBname DB名
+dbuser=${3:-wpuser} #DBUserName DBユーザ名
+dbpassword=${4:-wppass} #DBUserPassqword DBユーザパスワード
+rdsnama=$5 #RDSエンドポイントを入力
+rdsuser=$6 #RDSMasterユーザ名
+rdspassword=$7 #RDSMasterパスワード
 myip=`curl -s http://169.254.169.254/latest/meta-data/public-ipv4`
 
 ##Package installation パッケージインストール

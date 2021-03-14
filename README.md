@@ -16,6 +16,11 @@ mariaDBの初期化を行い、”設定値” で指定された名前の空DB�
 
 Install Wordpress for Amazon Linux2.
 Initialize mariaDB and create an Wordpress DB with the name specified in “Setting value”.
+  
+argument "DBtype Local or RDS" "Wordpress db name" "wordpress db user name" "wordpress db password" "rds endpoint" "rds root user" "rds root password"  
 
 Amazon Linux2 に対してWordpressをインストールします。
-mariaDBの初期化を行い、”設定値” で指定された名前のWordpressDBを作成します。
+mariaDBの初期化を行い、”設定値” で指定された名前のWordpressDBを作成します。  
+  
+引数 "DBtype Local or RDS" "Wordpress db name" "wordpress db user name" "wordpress db password" "rds endpoint" "rds root user" "rds root password"  
+  
