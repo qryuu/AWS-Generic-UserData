@@ -1,6 +1,6 @@
 #!/bin/bash
 #Setting value 設定値
-usedb=${1:-locak} #local or RDS
+usedb=${1:-local} #local or RDS
 dbname=${2:-wpdb} #DBname DB名
 dbuser=${3:-wpuser} #DBUserName DBユーザ名
 dbpassword=${4:-wppass} #DBUserPassqword DBユーザパスワード
