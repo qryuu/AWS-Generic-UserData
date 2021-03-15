@@ -66,6 +66,7 @@ echo user = $rdsuser >> /home/ec2-user/my.cnf
 echo password =  $rdspassword >> /home/ec2-user/my.cnf
 echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@'%' identified by '${dbpassword}';" > /tmp/create.sql
 mysql --defaults-extra-file=/home/ec2-user/my.cnf < /tmp/create.sql
+fi
 
 ##Wordpress 初期作成
 sudo -u apache /usr/local/bin/wp db create --path=/var/www/html
