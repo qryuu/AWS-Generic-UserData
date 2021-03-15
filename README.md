@@ -23,4 +23,10 @@ Amazon Linux2 に対してWordpressをインストールします。
 mariaDBの初期化を行い、”設定値” で指定された名前のWordpressDBを作成します。  
   
 引数 "DBtype Local or RDS" "Wordpress db name" "wordpress db user name" "wordpress db password" "rds endpoint" "rds root user" "rds root password"  
+
+```sh UserData
+#!/bin/bash  
+  
+curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/WordPress/lamp-Initial_construction_wordpress.sh | bash -s "arguments"
+```
   
