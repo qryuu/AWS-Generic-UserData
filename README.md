@@ -35,9 +35,9 @@ wordpress_password : wppass
 If you run the script with no arguments, it will be built with the above settings.  
 引数無しでスクリプトを実行した場合上記の設定で構築されます。  
 
-http://<ipaddress>/wp-admin
-  Login ID : <wordpress_user_bame>
-  Password : <wordpress_password>
+http://<ipaddress>/wp-admin  
+  Login ID : <wordpress_user_bame>  
+  Password : <wordpress_password>  
 
 ```sh UserData
 #!/bin/bash  
