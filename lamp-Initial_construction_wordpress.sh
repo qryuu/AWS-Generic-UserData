@@ -52,7 +52,7 @@ sudo -u apache /usr/local/bin/wp core download --locale=ja --path=/var/www/html
 if [ ${usedb} = "local" ];then
 sudo -u apache /usr/local/bin/wp core config --dbname=$dbname --dbuser=$dbuser --dbpass=$dbpassword --dbhost='localhost' --path=/var/www/html
 else
-sudo -u apache /usr/local/bin/wp core config --dbname=$dbname --dbuser=$rdsuser --dbpass=$rdspassword --dbhost=$rdsnama --path=/var/www/html
+sudo -u apache /usr/local/bin/wp core config --dbname=$dbname --dbuser=$dbuser --dbpass=$dbpassword --dbhost=$rdsnama --path=/var/www/html
 fi
 
 ##DB作成
@@ -60,16 +60,15 @@ if [ ${usedb} = "local" ];then
 echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@localhost identified by '${dbpassword}';" > /tmp/create.sql
 mysql --defaults-extra-file=/home/ec2-user/my.cnf < /tmp/create.sql
 else
-echo [mysql] >> /home/ec2-user/my.cnf 
-echo host = $rdsnama >> /home/ec2-user/my.cnf
-echo user = $rdsuser >> /home/ec2-user/my.cnf
-echo password =  $rdspassword >> /home/ec2-user/my.cnf
+echo [mysql] >> /home/ec2-user/rdsmy.cnf 
+echo host = $rdsnama >> /home/ec2-user/rdsmy.cnf
+echo user = $rdsuser >> /home/ec2-user/rdsmy.cnf
+echo password =  $rdspassword >> /home/ec2-user/rdsmy.cnf
 echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@'%' identified by '${dbpassword}';" > /tmp/create.sql
-mysql --defaults-extra-file=/home/ec2-user/my.cnf < /tmp/create.sql
+mysql --defaults-extra-file=/home/ec2-user/rdsmy.cnf < /tmp/create.sql
 fi
 
 ##Wordpress 初期作成
-sudo -u apache /usr/local/bin/wp db create --path=/var/www/html
 sudo -u apache /usr/local/bin/wp core install --url=$myip --title='WordPress' --admin_name=$dbuser --admin_password=$dbpassword --admin_email='wordpress@example.net'  --path=/var/www/html
 
 cat << EOS | sudo tee /etc/httpd/conf.d/wordpress.conf
