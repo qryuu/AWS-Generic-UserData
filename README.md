@@ -27,12 +27,12 @@ mariaDBの初期化を行い、”設定値” で指定された名前のWordpr
 ### DefaultSetting デフォルト設定
 
 DBType:local  
-wordpress db name:wpdb
-wordpress userbame:wpuser
-wordpress password:wppass
+wordpress db name:wpdb  
+wordpress userbame:wpuser  
+wordpress password:wppass  
 
-If you run the script with no arguments, it will be built with the above settings.
-引数無しで実行スクリプトを実行した場合上記の設定で構築されます。
+If you run the script with no arguments, it will be built with the above settings.  
+引数無しで実行スクリプトを実行した場合上記の設定で構築されます。  
 
 ```sh UserData
 #!/bin/bash  
