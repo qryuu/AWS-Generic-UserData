@@ -29,4 +29,11 @@ mariaDBの初期化を行い、”設定値” で指定された名前のWordpr
   
 curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/WordPress/lamp-Initial_construction_wordpress.sh | bash -s "arguments"
 ```
+
+Example
+
+```sh UserData
+#!/bin/bash  
   
+curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/WordPress/lamp-Initial_construction_wordpress.sh | bash -s local wordpressdb wpdbuser passw0rd
+```
