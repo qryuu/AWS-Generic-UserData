@@ -27,7 +27,7 @@ mariaDBの初期化を行い、”設定値” で指定された名前のWordpr
 ```sh UserData
 #!/bin/bash  
   
-curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/WordPress/lamp-Initial_construction_wordpress.sh | bash -s "arguments"
+curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_wordpress.sh | bash -s "arguments"
 ```
 
 Example
@@ -35,11 +35,11 @@ Example
 ```sh UserData local
 #!/bin/bash  
   
-curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/WordPress/lamp-Initial_construction_wordpress.sh | bash -s local wordpressdb wpdbuser passw0rd
+curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_wordpress.sh | bash -s local wordpressdb wpdbuser passw0rd
 ```
 
 ```sh UserData RDS
 #!/bin/bash  
   
-curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/WordPress/lamp-Initial_construction_wordpress.sh | bash -s RDS wordpressdb wpdbuser passw0rd wrodpress.example.ap-northeast-1.rds.amazon.com:3306 root rdspassword
+curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_wordpress.sh | bash -s RDS wordpressdb wpdbuser passw0rd wrodpress.example.ap-northeast-1.rds.amazon.com:3306 root rdspassword
 ```
