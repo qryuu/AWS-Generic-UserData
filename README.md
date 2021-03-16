@@ -33,11 +33,7 @@ wordpress_user_bame : wpuser
 wordpress_password : wppass  
 
 If you run the script with no arguments, it will be built with the above settings.  
-引数無しでスクリプトを実行した場合上記の設定で構築されます。  
-
-http://"ipaddress"/wp-admin  
-  Login ID : <wordpress_user_bame>  
-  Password : <wordpress_password>  
+引数無しでスクリプトを実行した場合上記の設定で構築されます。   
 
 ```sh UserData
 #!/bin/bash  
@@ -58,3 +54,9 @@ curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp
   
 curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_wordpress.sh | bash -s RDS wordpressdb wpdbuser passw0rd wrodpress.example.ap-northeast-1.rds.amazon.com:3306 root rdspassword
 ```
+
+#### Login to the WordPress administration screen 管理画面へのログイン
+
+http://"ipaddress"/wp-admin  
+  Login ID : <wordpress_user_bame>  
+  Password : <wordpress_password> 
