@@ -58,5 +58,5 @@ curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp
 #### Login to the WordPress administration screen 管理画面へのログイン
 
 http://"ipaddress"/wp-admin  
-  Login ID : <wordpress_user_bame>  
+  Login ID : <wordpress_user_name>  
   Password : <wordpress_password> 
