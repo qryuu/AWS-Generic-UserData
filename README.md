@@ -24,13 +24,23 @@ mariaDBの初期化を行い、”設定値” で指定された名前のWordpr
   
 引数 "DBtype Local or RDS" "Wordpress db name" "wordpress db user name" "wordpress db password" "rds endpoint" "rds root user" "rds root password"  
 
+### DefaultSetting デフォルト設定
+
+DBType:local  
+wordpress db name:wpdb
+wordpress userbame:wpuser
+wordpress password:wppass
+
+If you run the script with no arguments, it will be built with the above settings.
+引数無しで実行スクリプトを実行した場合上記の設定で構築されます。
+
 ```sh UserData
 #!/bin/bash  
   
-curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_wordpress.sh | bash -s "arguments"
+curl -L https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_wordpress.sh | bash
 ```
 
-Example
+#### Example
 
 ```sh UserData local
 #!/bin/bash  
