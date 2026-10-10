@@ -6,16 +6,19 @@ set -euo pipefail
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
 # ==============================================================================
 
-# Arguments / Setting values
-dbname="${1:-mydb}"            # DB name
-dbuser="${2:-myuser}"          # DB user
-dbpassword="${3:-mypassword}"  # DB user password
+# ------------------------------------------------------------------------------
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# ------------------------------------------------------------------------------
+dbname="${1:-mydb}"            # 第1引数: 作成する DB 名 (デフォルト: mydb)
+dbuser="${2:-myuser}"          # 第2引数: 作成する DB ユーザー名 (デフォルト: myuser)
+dbpassword="${3:-mypassword}"  # 第3引数: 作成する DB ユーザーパスワード (デフォルト: mypassword)
 
+# ------------------------------------------------------------------------------
+# 内部処理 (Internal Logic)
+# ------------------------------------------------------------------------------
 echo "==> Starting PostgreSQL initial construction..."
 
-# ------------------------------------------------------------------------------
 # 1. OS Detection & Package Installation
-# ------------------------------------------------------------------------------
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
     echo "==> Detected Amazon Linux 2023. Installing PostgreSQL 15 with dnf..."
     dnf update -y
@@ -29,9 +32,7 @@ else
     yum install -y postgresql-server postgresql tar gzip
 fi
 
-# ------------------------------------------------------------------------------
 # 2. Database Cluster Initialization & Service Startup
-# ------------------------------------------------------------------------------
 echo "==> Initializing PostgreSQL database cluster..."
 if [ ! -s /var/lib/pgsql/data/PG_VERSION ]; then
     postgresql-setup --initdb
@@ -40,9 +41,7 @@ fi
 echo "==> Starting and enabling PostgreSQL service..."
 systemctl enable --now postgresql.service
 
-# ------------------------------------------------------------------------------
 # 3. Create User & Database
-# ------------------------------------------------------------------------------
 echo "==> Creating database user '${dbuser}' and database '${dbname}'..."
 sudo -u postgres psql -c "DO \$\$
 BEGIN
@@ -59,19 +58,15 @@ sudo -u postgres psql -c "CREATE DATABASE \"${dbname}\" OWNER \"${dbuser}\" ENCO
 
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE \"${dbname}\" TO \"${dbuser}\";"
 
-# ------------------------------------------------------------------------------
 # 4. Authentication Configuration (pg_hba.conf)
-# ------------------------------------------------------------------------------
 echo "==> Configuring client authentication (pg_hba.conf)..."
 PG_HBA="/var/lib/pgsql/data/pg_hba.conf"
 if [ -f "${PG_HBA}" ]; then
-    # Allow md5 / scram-sha-256 for local IPv4 / IPv6 connections
     sed -i 's/host    all             all             127.0.0.1\/32            ident/host    all             all             127.0.0.1\/32            md5/g' "${PG_HBA}"
     sed -i 's/host    all             all             ::1\/128                 ident/host    all             all             ::1\/128                 md5/g' "${PG_HBA}"
     systemctl reload postgresql.service
 fi
 
-# Create ec2-user .pgpass for passwordless CLI access
 PGPASS_FILE="/home/ec2-user/.pgpass"
 echo "localhost:5432:${dbname}:${dbuser}:${dbpassword}" > "${PGPASS_FILE}"
 echo "127.0.0.1:5432:${dbname}:${dbuser}:${dbpassword}" >> "${PGPASS_FILE}"

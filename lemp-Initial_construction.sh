@@ -6,16 +6,22 @@ set -euo pipefail
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
 # ==============================================================================
 
-# Setting values (Arguments or defaults)
-dbname="${1:-lempdb}"          # DB name
-dbuser="${2:-lempuser}"        # DB username
-dbpassword="${3:-lemppass}"    # DB user password
+# ------------------------------------------------------------------------------
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# ------------------------------------------------------------------------------
+dbname="${1:-lempdb}"          # 第1引数: 作成する DB 名 (デフォルト: lempdb)
+dbuser="${2:-lempuser}"        # 第2引数: 作成する DB ユーザー名 (デフォルト: lempuser)
+dbpassword="${3:-lemppass}"    # 第3引数: 作成する DB ユーザーパスワード (デフォルト: lemppass)
 
+# アプリケーション追加設定:
+web_root="${WEB_ROOT:-/usr/share/nginx/html}"
+
+# ------------------------------------------------------------------------------
+# 内部処理 (Internal Logic)
+# ------------------------------------------------------------------------------
 echo "==> Starting LEMP stack initial construction..."
 
-# ------------------------------------------------------------------------------
 # 1. OS Detection & Package Installation
-# ------------------------------------------------------------------------------
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
     echo "==> Detected Amazon Linux 2023. Installing LEMP with dnf..."
     dnf update -y
@@ -58,9 +64,7 @@ else
         gzip
 fi
 
-# ------------------------------------------------------------------------------
 # 2. MariaDB Service Startup & Initialization
-# ------------------------------------------------------------------------------
 echo "==> Starting MariaDB service..."
 systemctl enable --now mariadb.service
 
@@ -95,9 +99,7 @@ EOF
 chmod 600 "${CNF_FILE}"
 chown ec2-user:ec2-user "${CNF_FILE}" 2>/dev/null || true
 
-# ------------------------------------------------------------------------------
 # 3. Create Initial Database & Application User
-# ------------------------------------------------------------------------------
 echo "==> Creating initial database '${dbname}' and user '${dbuser}'..."
 TMP_SQL="$(mktemp /tmp/create_db.XXXXXX.sql)"
 trap 'rm -f "${TMP_SQL}"' EXIT
@@ -112,29 +114,27 @@ EOF
 mysql --defaults-extra-file="${CNF_FILE}" < "${TMP_SQL}"
 rm -f "${TMP_SQL}"
 
-# ------------------------------------------------------------------------------
 # 4. Configure Nginx & PHP-FPM
-# ------------------------------------------------------------------------------
 echo "==> Configuring Nginx and PHP-FPM..."
-mkdir -p /usr/share/nginx/html
+mkdir -p "${web_root}"
 
-cat << 'EOF' > /etc/nginx/conf.d/default.conf
+cat << EOF > /etc/nginx/conf.d/default.conf
 server {
     listen       80;
     listen       [::]:80;
     server_name  _;
-    root         /usr/share/nginx/html;
+    root         ${web_root};
     index        index.php index.html index.htm;
 
     location / {
-        try_files $uri $uri/ /index.php?$query_string;
+        try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
     location ~ \.php$ {
-        try_files $uri =404;
+        try_files \$uri =404;
         fastcgi_pass   unix:/run/php-fpm/www.sock;
         fastcgi_index  index.php;
-        fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
+        fastcgi_param  SCRIPT_FILENAME  \$document_root\$fastcgi_script_name;
         include        fastcgi_params;
     }
 
@@ -144,8 +144,7 @@ server {
 }
 EOF
 
-# Ensure web root exists and create sample page
-cat << 'EOF' > /usr/share/nginx/html/index.php
+cat << 'EOF' > "${web_root}/index.php"
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -158,11 +157,9 @@ cat << 'EOF' > /usr/share/nginx/html/index.php
 </body>
 </html>
 EOF
-chown -R nginx:nginx /usr/share/nginx/html 2>/dev/null || chown -R apache:apache /usr/share/nginx/html
+chown -R nginx:nginx "${web_root}" 2>/dev/null || chown -R apache:apache "${web_root}"
 
-# ------------------------------------------------------------------------------
 # 5. Service Startup
-# ------------------------------------------------------------------------------
 echo "==> Starting PHP-FPM and Nginx services..."
 systemctl enable --now php-fpm.service
 systemctl enable --now nginx.service

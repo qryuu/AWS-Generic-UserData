@@ -4,46 +4,51 @@ set -euo pipefail
 # ==============================================================================
 # AWS-Generic-UserData: Redmine Initial Construction Script
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
-# Supported DB: MariaDB, PostgreSQL (Local or RDS)
 # Stack: Ruby, Bundler, Puma (systemd), Apache Reverse Proxy
 # ==============================================================================
 
-# Parse DB engine and mode flexibly
-arg1="$(echo "${1:-local}" | tr '[:upper:]' '[:lower:]')"
-arg2="$(echo "${2:-}" | tr '[:upper:]' '[:lower:]')"
+# ------------------------------------------------------------------------------
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# ------------------------------------------------------------------------------
+# DB 種別 / エンジン指定:
+#   local / mariadb      : ローカル MariaDB (デフォルト)
+#   postgres             : ローカル PostgreSQL
+#   rds / rds-mariadb    : Amazon RDS (MariaDB / MySQL)
+#   rds-postgres         : Amazon RDS (PostgreSQL)
+db_selection="${1:-local}"                                 # 第1引数: DB種別 (デフォルト: local)
 
+# データベースおよび管理者アカウント設定:
+dbname="${2:-redminedb}"                                   # 第2引数: DB名 (デフォルト: redminedb)
+dbuser="${3:-redmineuser}"                                 # 第3引数: DBユーザー名 (デフォルト: redmineuser)
+dbpassword="${4:-redminepass}"                             # 第4引数: DBパスワード (デフォルト: redminepass)
+
+# Amazon RDS 接続設定 (RDS モード時のみ必須):
+rdsendpoint="${5:-}"                                       # 第5引数: RDSエンドポイント (例: host または host:3306 / 5432)
+rdsuser="${6:-}"                                           # 第6引数: RDSマスターユーザー名
+rdspassword="${7:-}"                                       # 第7引数: RDSマスターパスワード
+
+# アプリケーション追加設定:
+redmine_dir="${REDMINE_DIR:-/var/www/redmine}"
+redmine_port="${REDMINE_PORT:-3000}"
+
+# ------------------------------------------------------------------------------
+# 内部処理 (Internal Logic)
+# ------------------------------------------------------------------------------
+# Parse DB engine and mode
+arg1="$(echo "${db_selection}" | tr '[:upper:]' '[:lower:]')"
 if [ "${arg1}" = "postgres" ] || [ "${arg1}" = "postgresql" ] || [ "${arg1}" = "local-postgres" ]; then
-    dbmode="local"; dbengine="postgres"; shift 1
+    dbmode="local"; dbengine="postgres"
 elif [ "${arg1}" = "rds-postgres" ] || [ "${arg1}" = "rds-postgresql" ]; then
-    dbmode="rds"; dbengine="postgres"; shift 1
+    dbmode="rds"; dbengine="postgres"
 elif [ "${arg1}" = "rds" ] || [ "${arg1}" = "rds-mariadb" ]; then
-    if [ "${arg2}" = "postgres" ] || [ "${arg2}" = "postgresql" ]; then
-        dbmode="rds"; dbengine="postgres"; shift 2
-    else
-        dbmode="rds"; dbengine="mariadb"; shift 1
-    fi
-elif [ "${arg1}" = "local" ]; then
-    if [ "${arg2}" = "postgres" ] || [ "${arg2}" = "postgresql" ]; then
-        dbmode="local"; dbengine="postgres"; shift 2
-    else
-        dbmode="local"; dbengine="mariadb"; shift 1
-    fi
+    dbmode="rds"; dbengine="mariadb"
 else
     dbmode="local"; dbengine="mariadb"
 fi
 
-dbname="${1:-redminedb}"
-dbuser="${2:-redmineuser}"
-dbpassword="${3:-redminepass}"
-rdsendpoint="${4:-}"
-rdsuser="${5:-}"
-rdspassword="${6:-}"
-
 echo "==> Starting Redmine initial construction (Engine: ${dbengine}, Mode: ${dbmode})..."
 
-# ------------------------------------------------------------------------------
 # 1. Fetch Instance IP (IMDSv2 with IMDSv1 fallback)
-# ------------------------------------------------------------------------------
 echo "==> Fetching instance IP address via IMDS..."
 TOKEN="$(curl -s -S -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || true)"
 if [ -n "${TOKEN}" ]; then
@@ -57,9 +62,7 @@ fi
 myip="${myip:-localhost}"
 echo "==> Instance IP resolved to: ${myip}"
 
-# ------------------------------------------------------------------------------
 # 2. OS Detection & Package Installation
-# ------------------------------------------------------------------------------
 COMMON_BUILD_PKGS="ruby ruby-devel gcc gcc-c++ make patch zlib-devel openssl-devel ImageMagick ImageMagick-devel httpd tar gzip git"
 
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
@@ -84,9 +87,7 @@ else
     gem install bundler --no-document || true
 fi
 
-# ------------------------------------------------------------------------------
 # 3. Database Preparation
-# ------------------------------------------------------------------------------
 if [ "${dbengine}" = "postgres" ]; then
     if [ "${dbmode}" = "local" ]; then
         echo "==> Setting up local PostgreSQL..."
@@ -204,20 +205,16 @@ EOF
     db_adapter="mysql2"
 fi
 
-# ------------------------------------------------------------------------------
 # 4. Download & Setup Redmine
-# ------------------------------------------------------------------------------
 echo "==> Downloading Redmine..."
-REDMINE_DIR="/var/www/redmine"
-mkdir -p "${REDMINE_DIR}"
+mkdir -p "${redmine_dir}"
 cd /tmp
 curl -fsSL -o redmine-latest.tar.gz https://www.redmine.org/releases/redmine-5.1.3.tar.gz
-tar -xzf redmine-latest.tar.gz -C "${REDMINE_DIR}" --strip-components 1
+tar -xzf redmine-latest.tar.gz -C "${redmine_dir}" --strip-components 1
 rm -f redmine-latest.tar.gz
 
-cd "${REDMINE_DIR}"
+cd "${redmine_dir}"
 
-# Create database configuration
 cat << EOF > config/database.yml
 production:
   adapter: ${db_adapter}
@@ -233,7 +230,6 @@ if [ "${db_adapter}" = "postgresql" ]; then
     sed -i 's/encoding: utf8mb4/encoding: utf8/g' config/database.yml
 fi
 
-# Install gems and run migrations
 echo "==> Installing Ruby gems with Bundler (${db_adapter})..."
 bundle config set --local without 'development test'
 if [ "${db_adapter}" = "postgresql" ]; then
@@ -249,11 +245,9 @@ RAILS_ENV=production REDMINE_LANG=ja bundle exec rake redmine:load_default_data
 bundle add puma --skip-install || true
 bundle install
 
-chown -R apache:apache "${REDMINE_DIR}"
+chown -R apache:apache "${redmine_dir}"
 
-# ------------------------------------------------------------------------------
 # 5. systemd Service Setup for Puma
-# ------------------------------------------------------------------------------
 echo "==> Configuring systemd service for Redmine (Puma)..."
 cat << EOF > /etc/systemd/system/redmine.service
 [Unit]
@@ -264,9 +258,9 @@ After=network.target
 Type=simple
 User=apache
 Group=apache
-WorkingDirectory=${REDMINE_DIR}
+WorkingDirectory=${redmine_dir}
 Environment=RAILS_ENV=production
-ExecStart=/usr/local/bin/bundle exec puma -b tcp://127.0.0.1:3000 -e production
+ExecStart=/usr/local/bin/bundle exec puma -b tcp://127.0.0.1:${redmine_port} -e production
 Restart=always
 
 [Install]
@@ -280,15 +274,13 @@ fi
 systemctl daemon-reload
 systemctl enable --now redmine.service
 
-# ------------------------------------------------------------------------------
 # 6. Apache Reverse Proxy Configuration
-# ------------------------------------------------------------------------------
 echo "==> Configuring Apache reverse proxy for Redmine..."
-cat << 'EOS' > /etc/httpd/conf.d/redmine.conf
+cat << EOS > /etc/httpd/conf.d/redmine.conf
 <VirtualHost *:80>
     ProxyPreserveHost On
-    ProxyPass / http://127.0.0.1:3000/
-    ProxyPassReverse / http://127.0.0.1:3000/
+    ProxyPass / http://127.0.0.1:${redmine_port}/
+    ProxyPassReverse / http://127.0.0.1:${redmine_port}/
 
     <Proxy *>
         Require all granted

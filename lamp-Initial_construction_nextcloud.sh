@@ -4,45 +4,49 @@ set -euo pipefail
 # ==============================================================================
 # AWS-Generic-UserData: Nextcloud Initial Construction Script
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
-# Supported DB: MariaDB, PostgreSQL (Local or RDS)
 # ==============================================================================
 
-# Parse DB engine and mode flexibly
-arg1="$(echo "${1:-local}" | tr '[:upper:]' '[:lower:]')"
-arg2="$(echo "${2:-}" | tr '[:upper:]' '[:lower:]')"
+# ------------------------------------------------------------------------------
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# ------------------------------------------------------------------------------
+# DB 種別 / エンジン指定:
+#   local / mariadb      : ローカル MariaDB (デフォルト)
+#   postgres             : ローカル PostgreSQL
+#   rds / rds-mariadb    : Amazon RDS (MariaDB / MySQL)
+#   rds-postgres         : Amazon RDS (PostgreSQL)
+db_selection="${1:-local}"                                 # 第1引数: DB種別 (デフォルト: local)
 
+# データベースおよび管理者アカウント設定:
+dbname="${2:-nextclouddb}"                                 # 第2引数: DB名 (デフォルト: nextclouddb)
+dbuser="${3:-ncadmin}"                                     # 第3引数: DBユーザー名 兼 Nextcloud管理者ID (デフォルト: ncadmin)
+dbpassword="${4:-ncpass123}"                               # 第4引数: DBパスワード 兼 Nextcloud管理者パスワード (デフォルト: ncpass123)
+
+# Amazon RDS 接続設定 (RDS モード時のみ必須):
+rdsendpoint="${5:-}"                                       # 第5引数: RDSエンドポイント (例: host または host:3306 / 5432)
+rdsuser="${6:-}"                                           # 第6引数: RDSマスターユーザー名
+rdspassword="${7:-}"                                       # 第7引数: RDSマスターパスワード
+
+# アプリケーション追加設定:
+data_dir="${DATA_DIR:-/var/www/nextcloud-data}"
+
+# ------------------------------------------------------------------------------
+# 内部処理 (Internal Logic)
+# ------------------------------------------------------------------------------
+# Parse DB engine and mode
+arg1="$(echo "${db_selection}" | tr '[:upper:]' '[:lower:]')"
 if [ "${arg1}" = "postgres" ] || [ "${arg1}" = "postgresql" ] || [ "${arg1}" = "local-postgres" ]; then
-    dbmode="local"; dbengine="postgres"; shift 1
+    dbmode="local"; dbengine="postgres"
 elif [ "${arg1}" = "rds-postgres" ] || [ "${arg1}" = "rds-postgresql" ]; then
-    dbmode="rds"; dbengine="postgres"; shift 1
+    dbmode="rds"; dbengine="postgres"
 elif [ "${arg1}" = "rds" ] || [ "${arg1}" = "rds-mariadb" ]; then
-    if [ "${arg2}" = "postgres" ] || [ "${arg2}" = "postgresql" ]; then
-        dbmode="rds"; dbengine="postgres"; shift 2
-    else
-        dbmode="rds"; dbengine="mariadb"; shift 1
-    fi
-elif [ "${arg1}" = "local" ]; then
-    if [ "${arg2}" = "postgres" ] || [ "${arg2}" = "postgresql" ]; then
-        dbmode="local"; dbengine="postgres"; shift 2
-    else
-        dbmode="local"; dbengine="mariadb"; shift 1
-    fi
+    dbmode="rds"; dbengine="mariadb"
 else
     dbmode="local"; dbengine="mariadb"
 fi
 
-dbname="${1:-nextclouddb}"
-dbuser="${2:-ncadmin}"
-dbpassword="${3:-ncpass123}"
-rdsendpoint="${4:-}"
-rdsuser="${5:-}"
-rdspassword="${6:-}"
-
 echo "==> Starting Nextcloud initial construction (Engine: ${dbengine}, Mode: ${dbmode})..."
 
-# ------------------------------------------------------------------------------
 # 1. Fetch Instance IP (IMDSv2 with IMDSv1 fallback)
-# ------------------------------------------------------------------------------
 echo "==> Fetching instance IP address via IMDS..."
 TOKEN="$(curl -s -S -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || true)"
 if [ -n "${TOKEN}" ]; then
@@ -56,9 +60,7 @@ fi
 myip="${myip:-localhost}"
 echo "==> Instance IP resolved to: ${myip}"
 
-# ------------------------------------------------------------------------------
 # 2. OS Detection & Package Installation
-# ------------------------------------------------------------------------------
 COMMON_PHP_PKGS="httpd php php-cli php-common php-gd php-mbstring php-intl php-opcache php-xml php-zip php-bcmath php-gmp tar bzip2 unzip gzip"
 
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
@@ -99,9 +101,7 @@ opcache.save_comments = 1
 opcache.revalidate_freq = 1
 EOF
 
-# ------------------------------------------------------------------------------
 # 3. Database Preparation
-# ------------------------------------------------------------------------------
 if [ "${dbengine}" = "postgres" ]; then
     if [ "${dbmode}" = "local" ]; then
         echo "==> Setting up local PostgreSQL..."
@@ -215,13 +215,11 @@ EOF
     nc_dbtype="mysql"
 fi
 
-# ------------------------------------------------------------------------------
 # 4. Download & Extract Nextcloud
-# ------------------------------------------------------------------------------
 echo "==> Downloading Nextcloud archive..."
-mkdir -p /var/www/nextcloud-data
-chown -R apache:apache /var/www/nextcloud-data
-chmod 770 /var/www/nextcloud-data
+mkdir -p "${data_dir}"
+chown -R apache:apache "${data_dir}"
+chmod 770 "${data_dir}"
 
 cd /tmp
 curl -fsSL -o nextcloud-latest.tar.bz2 https://download.nextcloud.com/server/releases/latest.tar.bz2
@@ -234,9 +232,7 @@ chown -R apache:apache /var/www/html
 find /var/www/html -type d -exec chmod 755 {} \;
 find /var/www/html -type f -exec chmod 644 {} \;
 
-# ------------------------------------------------------------------------------
 # 5. CLI Installation (occ maintenance:install)
-# ------------------------------------------------------------------------------
 echo "==> Running Nextcloud CLI installation (${nc_dbtype})..."
 sudo -u apache /usr/bin/php /var/www/html/occ maintenance:install \
     --database="${nc_dbtype}" \
@@ -246,15 +242,13 @@ sudo -u apache /usr/bin/php /var/www/html/occ maintenance:install \
     --database-host="${nc_dbhost}" \
     --admin-user="${dbuser}" \
     --admin-pass="${dbpassword}" \
-    --data-dir="/var/www/nextcloud-data"
+    --data-dir="${data_dir}"
 
 # Add instance IP to trusted_domains
 echo "==> Registering trusted domains..."
 sudo -u apache /usr/bin/php /var/www/html/occ config:system:set trusted_domains 1 --value="${myip}"
 
-# ------------------------------------------------------------------------------
 # 6. Apache Configuration & Cron Setup
-# ------------------------------------------------------------------------------
 echo "==> Configuring Apache & Cron for Nextcloud..."
 cat << 'EOS' > /etc/httpd/conf.d/nextcloud.conf
 <Directory "/var/www/html">

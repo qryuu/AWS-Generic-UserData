@@ -6,20 +6,32 @@ set -euo pipefail
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
 # ==============================================================================
 
-# Arguments / Setting values
-usedb="$(echo "${1:-local}" | tr '[:upper:]' '[:lower:]')" # local or rds
-dbname="${2:-wpdb}"                                        # DB name
-dbuser="${3:-wpuser}"                                      # DB username / WP admin user
-dbpassword="${4:-wppass}"                                  # DB user password / WP admin password
-rdsendpoint="${5:-}"                                       # RDS endpoint (e.g. host or host:3306)
-rdsuser="${6:-}"                                           # RDS master user
-rdspassword="${7:-}"                                       # RDS master password
+# ------------------------------------------------------------------------------
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# ------------------------------------------------------------------------------
+# DB モード (local または rds):
+usedb="$(echo "${1:-local}" | tr '[:upper:]' '[:lower:]')"
 
+# データベースおよび管理者アカウント設定:
+dbname="${2:-wpdb}"                                        # 第2引数: DB 名 (デフォルト: wpdb)
+dbuser="${3:-wpuser}"                                      # 第3引数: DB ユーザー名 兼 WP 管理者 ID (デフォルト: wpuser)
+dbpassword="${4:-wppass}"                                  # 第4引数: DB パスワード 兼 WP 管理者パスワード (デフォルト: wppass)
+
+# Amazon RDS 接続設定 (RDS モード時のみ必須):
+rdsendpoint="${5:-}"                                       # 第5引数: RDS エンドポイント (例: host または host:3306)
+rdsuser="${6:-}"                                           # 第6引数: RDS マスターユーザー名
+rdspassword="${7:-}"                                       # 第7引数: RDS マスターパスワード
+
+# アプリケーション追加設定:
+admin_email="${ADMIN_EMAIL:-wordpress@example.net}"
+site_title="${SITE_TITLE:-WordPress}"
+
+# ------------------------------------------------------------------------------
+# 内部処理 (Internal Logic)
+# ------------------------------------------------------------------------------
 echo "==> Starting WordPress initial construction (DB mode: ${usedb})..."
 
-# ------------------------------------------------------------------------------
 # 1. Fetch Instance IP (IMDSv2 with IMDSv1 fallback)
-# ------------------------------------------------------------------------------
 echo "==> Fetching instance IP address via IMDS..."
 TOKEN="$(curl -s -S -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || true)"
 if [ -n "${TOKEN}" ]; then
@@ -33,9 +45,7 @@ fi
 myip="${myip:-localhost}"
 echo "==> Instance IP resolved to: ${myip}"
 
-# ------------------------------------------------------------------------------
 # 2. OS Detection & Package Installation
-# ------------------------------------------------------------------------------
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
     echo "==> Detected Amazon Linux 2023. Installing packages with dnf..."
     dnf update -y
@@ -76,9 +86,7 @@ else
         gzip
 fi
 
-# ------------------------------------------------------------------------------
 # 3. Database Preparation & User Creation
-# ------------------------------------------------------------------------------
 TMP_SQL="$(mktemp /tmp/wp_init_db.XXXXXX.sql)"
 trap 'rm -f "${TMP_SQL}"' EXIT
 
@@ -86,7 +94,6 @@ if [ "${usedb}" = "local" ]; then
     echo "==> Starting local MariaDB service..."
     systemctl enable --now mariadb.service
 
-    # Generate secure random root password
     vMySQLRootPasswd="$(cat /dev/urandom | tr -dc '[:alnum:]' | head -c 24)"
     SECRET_FILE="/home/ec2-user/.mysql.secrets"
     echo "${vMySQLRootPasswd}" > "${SECRET_FILE}"
@@ -167,9 +174,7 @@ fi
 
 rm -f "${TMP_SQL}"
 
-# ------------------------------------------------------------------------------
 # 4. Install WP-CLI & Setup WordPress
-# ------------------------------------------------------------------------------
 echo "==> Installing WP-CLI..."
 curl -sS -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
 chmod +x /usr/local/bin/wp
@@ -193,17 +198,15 @@ echo "==> Generating wp-config.php..."
 echo "==> Installing WordPress Core..."
 /usr/local/bin/wp core install \
     --url="http://${myip}" \
-    --title="WordPress" \
+    --title="${site_title}" \
     --admin_user="${dbuser}" \
     --admin_password="${dbpassword}" \
-    --admin_email="wordpress@example.net" \
+    --admin_email="${admin_email}" \
     --path=/var/www/html \
     --skip-email \
     --allow-root
 
-# ------------------------------------------------------------------------------
 # 5. Apache Configuration & Permissions
-# ------------------------------------------------------------------------------
 echo "==> Configuring Apache for WordPress..."
 cat << 'EOS' > /etc/httpd/conf.d/wordpress.conf
 <Directory "/var/www/html">

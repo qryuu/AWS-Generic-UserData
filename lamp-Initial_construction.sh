@@ -6,16 +6,19 @@ set -euo pipefail
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
 # ==============================================================================
 
-# Setting value 設定値 (引数またはデフォルト値)
-dbname="${1:-lampdb}"          # DBname DB名
-dbuser="${2:-lampuser}"        # DBUserName DBユーザ名
-dbpassword="${3:-lamppass}"    # DBUserPassword DBユーザパスワード
+# ------------------------------------------------------------------------------
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# ------------------------------------------------------------------------------
+dbname="${1:-lampdb}"          # 第1引数: 作成する DB 名 (デフォルト: lampdb)
+dbuser="${2:-lampuser}"        # 第2引数: 作成する DB ユーザー名 (デフォルト: lampuser)
+dbpassword="${3:-lamppass}"    # 第3引数: 作成する DB ユーザーパスワード (デフォルト: lamppass)
 
+# ------------------------------------------------------------------------------
+# 内部処理 (Internal Logic)
+# ------------------------------------------------------------------------------
 echo "==> Starting LAMP stack initial construction..."
 
-# ------------------------------------------------------------------------------
 # 1. OS Detection & Package Installation
-# ------------------------------------------------------------------------------
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
     echo "==> Detected Amazon Linux 2023. Installing packages with dnf..."
     dnf update -y
@@ -56,13 +59,10 @@ else
         gzip
 fi
 
-# ------------------------------------------------------------------------------
 # 2. MariaDB Service Startup & Initialization
-# ------------------------------------------------------------------------------
 echo "==> Starting MariaDB service..."
 systemctl enable --now mariadb.service
 
-# Generate secure random root password
 vMySQLRootPasswd="$(cat /dev/urandom | tr -dc '[:alnum:]' | head -c 24)"
 SECRET_FILE="/home/ec2-user/.mysql.secrets"
 echo "${vMySQLRootPasswd}" > "${SECRET_FILE}"
@@ -70,7 +70,6 @@ chmod 600 "${SECRET_FILE}"
 chown ec2-user:ec2-user "${SECRET_FILE}" 2>/dev/null || true
 
 echo "==> Securing MariaDB installation..."
-# Set root password and remove insecure defaults (compatible with MariaDB 10.2 - 10.5+)
 mysql -u root -e "
     ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${vMySQLRootPasswd}');
     DELETE FROM mysql.user WHERE User='';
@@ -85,7 +84,6 @@ mysql -u root -e "
     DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
     FLUSH PRIVILEGES;"
 
-# Create ec2-user .my.cnf for root CLI access
 CNF_FILE="/home/ec2-user/.my.cnf"
 cat << EOF > "${CNF_FILE}"
 [client]
@@ -96,9 +94,7 @@ EOF
 chmod 600 "${CNF_FILE}"
 chown ec2-user:ec2-user "${CNF_FILE}" 2>/dev/null || true
 
-# ------------------------------------------------------------------------------
 # 3. Create Database & Application User
-# ------------------------------------------------------------------------------
 echo "==> Creating initial database '${dbname}' and user '${dbuser}'..."
 TMP_SQL="$(mktemp /tmp/create_db.XXXXXX.sql)"
 trap 'rm -f "${TMP_SQL}"' EXIT
@@ -113,13 +109,10 @@ EOF
 mysql --defaults-extra-file="${CNF_FILE}" < "${TMP_SQL}"
 rm -f "${TMP_SQL}"
 
-# ------------------------------------------------------------------------------
 # 4. Apache Startup & Verification
-# ------------------------------------------------------------------------------
 echo "==> Starting Apache HTTP Server..."
 systemctl enable --now httpd.service
 
-# Create a sample index page
 if [ ! -f /var/www/html/index.php ] && [ ! -f /var/www/html/index.html ]; then
     cat << 'EOF' > /var/www/html/index.php
 <!DOCTYPE html>
