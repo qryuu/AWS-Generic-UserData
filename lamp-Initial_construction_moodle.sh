@@ -4,11 +4,16 @@ set -euo pipefail
 # ==============================================================================
 # AWS-Generic-UserData: Moodle LMS Initial Construction Script
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
+# Supported Web: Apache (httpd), Nginx (with PHP-FPM)
+# Supported DB: MariaDB, PostgreSQL (Local or RDS)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数・環境変数で指定可能
 # ------------------------------------------------------------------------------
+# Web サーバー選択 (apache または nginx):
+webserver="${WEBSERVER:-apache}"                           # apache (デフォルト) または nginx
+
 # DB 種別 / エンジン指定:
 #   local / mariadb      : ローカル MariaDB (デフォルト)
 #   postgres             : ローカル PostgreSQL
@@ -34,7 +39,8 @@ shortname="${MOODLE_SHORTNAME:-Moodle}"
 # ------------------------------------------------------------------------------
 # 内部処理 (Internal Logic)
 # ------------------------------------------------------------------------------
-# Parse DB engine and mode
+webserver="$(echo "${webserver}" | tr '[:upper:]' '[:lower:]')"
+
 arg1="$(echo "${db_selection}" | tr '[:upper:]' '[:lower:]')"
 if [ "${arg1}" = "postgres" ] || [ "${arg1}" = "postgresql" ] || [ "${arg1}" = "local-postgres" ]; then
     dbmode="local"; dbengine="postgres"
@@ -46,7 +52,7 @@ else
     dbmode="local"; dbengine="mariadb"
 fi
 
-echo "==> Starting Moodle initial construction (Engine: ${dbengine}, Mode: ${dbmode})..."
+echo "==> Starting Moodle initial construction (Web: ${webserver}, Engine: ${dbengine}, Mode: ${dbmode})..."
 
 # 1. Fetch Instance IP (IMDSv2 with IMDSv1 fallback)
 echo "==> Fetching instance IP address via IMDS..."
@@ -63,30 +69,48 @@ myip="${myip:-localhost}"
 echo "==> Instance IP resolved to: ${myip}"
 
 # 2. OS Detection & Package Installation
-COMMON_PHP_PKGS="httpd php php-cli php-common php-gd php-mbstring php-intl php-opcache php-xml php-soap php-zip php-sodium php-bcmath git tar gzip"
+COMMON_PHP_PKGS="php php-cli php-common php-gd php-mbstring php-intl php-opcache php-xml php-soap php-zip php-sodium php-bcmath git tar gzip"
 
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
     echo "==> Detected Amazon Linux 2023. Installing packages with dnf..."
     dnf update -y
-    if [ "${dbengine}" = "postgres" ]; then
-        dnf install -y ${COMMON_PHP_PKGS} php-pgsql postgresql15-server postgresql15
+    if [ "${webserver}" = "nginx" ]; then
+        WEB_PKGS="nginx php-fpm"; web_user="nginx"
     else
-        dnf install -y ${COMMON_PHP_PKGS} php-mysqlnd mariadb105-server mariadb105
+        WEB_PKGS="httpd"; web_user="apache"
+    fi
+
+    if [ "${dbengine}" = "postgres" ]; then
+        dnf install -y ${COMMON_PHP_PKGS} ${WEB_PKGS} php-pgsql postgresql15-server postgresql15
+    else
+        dnf install -y ${COMMON_PHP_PKGS} ${WEB_PKGS} php-mysqlnd mariadb105-server mariadb105
     fi
 else
     echo "==> Detected Amazon Linux 2 (or legacy). Installing packages with yum..."
     yum update -y
-    if [ "${dbengine}" = "postgres" ]; then
-        if command -v amazon-linux-extras >/dev/null 2>&1; then
-            amazon-linux-extras install -y lamp-mariadb10.2-php7.2 postgresql14 || true
-        fi
-        yum install -y ${COMMON_PHP_PKGS} php-pgsql postgresql-server postgresql
-    else
-        if command -v amazon-linux-extras >/dev/null 2>&1; then
-            amazon-linux-extras install -y lamp-mariadb10.2-php7.2 || true
-        fi
-        yum install -y ${COMMON_PHP_PKGS} php-mysqlnd mariadb-server mariadb
+    if command -v amazon-linux-extras >/dev/null 2>&1; then
+        amazon-linux-extras install -y lamp-mariadb10.2-php7.2 || true
+        [ "${webserver}" = "nginx" ] && amazon-linux-extras install -y nginx1 || true
+        [ "${dbengine}" = "postgres" ] && amazon-linux-extras install -y postgresql14 || true
     fi
+
+    if [ "${webserver}" = "nginx" ]; then
+        WEB_PKGS="nginx php-fpm"; web_user="nginx"
+    else
+        WEB_PKGS="httpd"; web_user="apache"
+    fi
+
+    if [ "${dbengine}" = "postgres" ]; then
+        yum install -y ${COMMON_PHP_PKGS} ${WEB_PKGS} php-pgsql postgresql-server postgresql
+    else
+        yum install -y ${COMMON_PHP_PKGS} ${WEB_PKGS} php-mysqlnd mariadb-server mariadb
+    fi
+fi
+
+# Configure PHP-FPM user when Nginx is selected
+if [ "${webserver}" = "nginx" ] && [ -f /etc/php-fpm.d/www.conf ]; then
+    sed -i 's/^user = apache/user = nginx/' /etc/php-fpm.d/www.conf 2>/dev/null || true
+    sed -i 's/^group = apache/group = nginx/' /etc/php-fpm.d/www.conf 2>/dev/null || true
 fi
 
 # Configure PHP settings for Moodle
@@ -218,20 +242,20 @@ fi
 # 4. Download Moodle & Setup Directories
 echo "==> Downloading Moodle..."
 mkdir -p /var/www/moodledata
-chown -R apache:apache /var/www/moodledata
+chown -R "${web_user}:${web_user}" /var/www/moodledata
 chmod 777 /var/www/moodledata
 
 rm -rf /var/www/html/*
 git clone -b MOODLE_404_STABLE --depth 1 git://git.moodle.org/moodle.git /var/www/html/ 2>/dev/null || \
 git clone -b MOODLE_404_STABLE --depth 1 https://github.com/moodle/moodle.git /var/www/html/
 
-chown -R apache:apache /var/www/html
+chown -R "${web_user}:${web_user}" /var/www/html
 find /var/www/html -type d -exec chmod 755 {} \;
 find /var/www/html -type f -exec chmod 644 {} \;
 
 # 5. Non-Interactive CLI Installation
 echo "==> Installing Moodle via CLI (${moodle_dbtype})..."
-sudo -u apache /usr/bin/php /var/www/html/admin/cli/install.php \
+sudo -u "${web_user}" /usr/bin/php /var/www/html/admin/cli/install.php \
     --non-interactive \
     --wwwroot="http://${myip}" \
     --dataroot="/var/www/moodledata" \
@@ -248,21 +272,49 @@ sudo -u apache /usr/bin/php /var/www/html/admin/cli/install.php \
     --adminemail="${admin_email}" \
     --agree-license
 
-# 6. Apache Configuration & Cron Setup
-echo "==> Configuring Apache & Cron for Moodle..."
-cat << 'EOS' > /etc/httpd/conf.d/moodle.conf
+# 6. Web Server Configuration & Cron Setup
+echo "==> Configuring Web Server (${webserver}) & Cron for Moodle..."
+if [ "${webserver}" = "nginx" ]; then
+    cat << 'EOS' > /etc/nginx/conf.d/moodle.conf
+server {
+    listen       80;
+    listen       [::]:80;
+    server_name  _;
+    root         /var/www/html;
+    index        index.php index.html index.htm;
+
+    client_max_body_size 100M;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ [^/]\.php(/|$) {
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
+        fastcgi_pass   unix:/run/php-fpm/www.sock;
+        fastcgi_index  index.php;
+        include        fastcgi_params;
+        fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
+        fastcgi_param  PATH_INFO        $fastcgi_path_info;
+    }
+}
+EOS
+    systemctl enable --now php-fpm.service
+    systemctl enable --now nginx.service
+else
+    cat << 'EOS' > /etc/httpd/conf.d/moodle.conf
 <Directory "/var/www/html">
     AllowOverride All
     Require all granted
 </Directory>
 EOS
+    systemctl enable --now httpd.service
+fi
 
-echo "* * * * * apache /usr/bin/php /var/www/html/admin/cli/cron.php >/dev/null 2>&1" > /etc/cron.d/moodle
-
-echo "==> Starting Apache HTTP Server..."
-systemctl enable --now httpd.service
+echo "* * * * * ${web_user} /usr/bin/php /var/www/html/admin/cli/cron.php >/dev/null 2>&1" > /etc/cron.d/moodle
 
 echo "==> Moodle initial construction completed successfully!"
-echo "==> Database: ${moodle_dbtype} (${dbmode})"
+echo "==> Web Server: ${webserver}"
+echo "==> Database  : ${moodle_dbtype} (${dbmode})"
 echo "==> Access URL: http://${myip}/"
-echo "==> Admin Login: ${dbuser}"
+echo "==> Admin User: ${dbuser}"

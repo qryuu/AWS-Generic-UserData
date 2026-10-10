@@ -4,11 +4,15 @@ set -euo pipefail
 # ==============================================================================
 # AWS-Generic-UserData: WordPress Initial Construction Script
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
+# Supported Web: Apache (httpd), Nginx (with PHP-FPM)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数・環境変数で指定可能
 # ------------------------------------------------------------------------------
+# Web サーバー選択 (apache または nginx):
+webserver="${WEBSERVER:-apache}"                           # apache (デフォルト) または nginx
+
 # DB モード (local または rds):
 usedb="$(echo "${1:-local}" | tr '[:upper:]' '[:lower:]')"
 
@@ -29,7 +33,8 @@ site_title="${SITE_TITLE:-WordPress}"
 # ------------------------------------------------------------------------------
 # 内部処理 (Internal Logic)
 # ------------------------------------------------------------------------------
-echo "==> Starting WordPress initial construction (DB mode: ${usedb})..."
+webserver="$(echo "${webserver}" | tr '[:upper:]' '[:lower:]')"
+echo "==> Starting WordPress initial construction (Web: ${webserver}, DB: ${usedb})..."
 
 # 1. Fetch Instance IP (IMDSv2 with IMDSv1 fallback)
 echo "==> Fetching instance IP address via IMDS..."
@@ -46,44 +51,38 @@ myip="${myip:-localhost}"
 echo "==> Instance IP resolved to: ${myip}"
 
 # 2. OS Detection & Package Installation
+COMMON_PHP_PKGS="mariadb105-server mariadb105 php php-cli php-common php-gd php-mbstring php-intl php-mysqlnd php-opcache php-xml tar gzip"
+
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
     echo "==> Detected Amazon Linux 2023. Installing packages with dnf..."
     dnf update -y
-    dnf install -y \
-        httpd \
-        mariadb105-server \
-        mariadb105 \
-        php \
-        php-cli \
-        php-common \
-        php-gd \
-        php-mbstring \
-        php-intl \
-        php-mysqlnd \
-        php-opcache \
-        php-xml \
-        tar \
-        gzip
+    if [ "${webserver}" = "nginx" ]; then
+        dnf install -y ${COMMON_PHP_PKGS} nginx php-fpm
+        web_user="nginx"
+    else
+        dnf install -y ${COMMON_PHP_PKGS} httpd
+        web_user="apache"
+    fi
 else
-    echo "==> Detected Amazon Linux 2 (or legacy). Installing packages with yum / amazon-linux-extras..."
+    echo "==> Detected Amazon Linux 2 (or legacy). Installing packages with yum..."
     yum update -y
     if command -v amazon-linux-extras >/dev/null 2>&1; then
         amazon-linux-extras install -y lamp-mariadb10.2-php7.2 || true
+        [ "${webserver}" = "nginx" ] && amazon-linux-extras install -y nginx1 || true
     fi
-    yum install -y \
-        httpd \
-        mariadb \
-        mariadb-server \
-        php \
-        php-gd \
-        php-mbstring \
-        php-intl \
-        php-mysqlnd \
-        php-opcache \
-        php-dom \
-        php-xml \
-        tar \
-        gzip
+    if [ "${webserver}" = "nginx" ]; then
+        yum install -y nginx php-fpm mariadb-server mariadb php-gd php-mbstring php-intl php-mysqlnd php-opcache php-dom php-xml tar gzip
+        web_user="nginx"
+    else
+        yum install -y httpd mariadb-server mariadb php-gd php-mbstring php-intl php-mysqlnd php-opcache php-dom php-xml tar gzip
+        web_user="apache"
+    fi
+fi
+
+# Configure PHP-FPM user when Nginx is selected
+if [ "${webserver}" = "nginx" ] && [ -f /etc/php-fpm.d/www.conf ]; then
+    sed -i 's/^user = apache/user = nginx/' /etc/php-fpm.d/www.conf 2>/dev/null || true
+    sed -i 's/^group = apache/group = nginx/' /etc/php-fpm.d/www.conf 2>/dev/null || true
 fi
 
 # 3. Database Preparation & User Creation
@@ -181,7 +180,7 @@ chmod +x /usr/local/bin/wp
 
 echo "==> Downloading WordPress Japanese package..."
 mkdir -p /var/www/html
-chown -R apache:apache /var/www/html
+chown -R "${web_user}:${web_user}" /var/www/html
 /usr/local/bin/wp core download --locale=ja --path=/var/www/html --allow-root
 
 echo "==> Generating wp-config.php..."
@@ -206,22 +205,51 @@ echo "==> Installing WordPress Core..."
     --skip-email \
     --allow-root
 
-# 5. Apache Configuration & Permissions
-echo "==> Configuring Apache for WordPress..."
-cat << 'EOS' > /etc/httpd/conf.d/wordpress.conf
+# 5. Web Server Configuration & Permissions
+echo "==> Configuring Web Server (${webserver})..."
+if [ "${webserver}" = "nginx" ]; then
+    cat << 'EOS' > /etc/nginx/conf.d/wordpress.conf
+server {
+    listen       80;
+    listen       [::]:80;
+    server_name  _;
+    root         /var/www/html;
+    index        index.php index.html index.htm;
+
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_pass   unix:/run/php-fpm/www.sock;
+        fastcgi_index  index.php;
+        fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
+        include        fastcgi_params;
+    }
+
+    location ~ /\.ht {
+        deny  all;
+    }
+}
+EOS
+    systemctl enable --now php-fpm.service
+    systemctl enable --now nginx.service
+else
+    cat << 'EOS' > /etc/httpd/conf.d/wordpress.conf
 <Directory "/var/www/html">
     AllowOverride All
     Require all granted
 </Directory>
 EOS
+    systemctl enable --now httpd.service
+fi
 
-chown -R apache:apache /var/www/html
+chown -R "${web_user}:${web_user}" /var/www/html
 find /var/www/html -type d -exec chmod 755 {} \;
 find /var/www/html -type f -exec chmod 644 {} \;
 
-echo "==> Starting Apache HTTP Server..."
-systemctl enable --now httpd.service
-
 echo "==> WordPress initial construction completed successfully!"
-echo "==> Access URL: http://${myip}/"
-echo "==> Admin URL : http://${myip}/wp-admin"
+echo "==> Web Server: ${webserver}"
+echo "==> Access URL : http://${myip}/"
+echo "==> Admin URL  : http://${myip}/wp-admin"

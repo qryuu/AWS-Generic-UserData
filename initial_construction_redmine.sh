@@ -4,12 +4,16 @@ set -euo pipefail
 # ==============================================================================
 # AWS-Generic-UserData: Redmine Initial Construction Script
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
-# Stack: Ruby, Bundler, Puma (systemd), Apache Reverse Proxy
+# Supported Web: Apache (httpd), Nginx (Reverse Proxy to Puma)
+# Supported DB: MariaDB, PostgreSQL (Local or RDS)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数・環境変数で指定可能
 # ------------------------------------------------------------------------------
+# Web サーバー選択 (apache または nginx):
+webserver="${WEBSERVER:-apache}"                           # apache (デフォルト) または nginx
+
 # DB 種別 / エンジン指定:
 #   local / mariadb      : ローカル MariaDB (デフォルト)
 #   postgres             : ローカル PostgreSQL
@@ -34,7 +38,8 @@ redmine_port="${REDMINE_PORT:-3000}"
 # ------------------------------------------------------------------------------
 # 内部処理 (Internal Logic)
 # ------------------------------------------------------------------------------
-# Parse DB engine and mode
+webserver="$(echo "${webserver}" | tr '[:upper:]' '[:lower:]')"
+
 arg1="$(echo "${db_selection}" | tr '[:upper:]' '[:lower:]')"
 if [ "${arg1}" = "postgres" ] || [ "${arg1}" = "postgresql" ] || [ "${arg1}" = "local-postgres" ]; then
     dbmode="local"; dbengine="postgres"
@@ -46,7 +51,7 @@ else
     dbmode="local"; dbengine="mariadb"
 fi
 
-echo "==> Starting Redmine initial construction (Engine: ${dbengine}, Mode: ${dbmode})..."
+echo "==> Starting Redmine initial construction (Web: ${webserver}, Engine: ${dbengine}, Mode: ${dbmode})..."
 
 # 1. Fetch Instance IP (IMDSv2 with IMDSv1 fallback)
 echo "==> Fetching instance IP address via IMDS..."
@@ -63,26 +68,40 @@ myip="${myip:-localhost}"
 echo "==> Instance IP resolved to: ${myip}"
 
 # 2. OS Detection & Package Installation
-COMMON_BUILD_PKGS="ruby ruby-devel gcc gcc-c++ make patch zlib-devel openssl-devel ImageMagick ImageMagick-devel httpd tar gzip git"
+COMMON_BUILD_PKGS="ruby ruby-devel gcc gcc-c++ make patch zlib-devel openssl-devel ImageMagick ImageMagick-devel tar gzip git"
 
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
     echo "==> Detected Amazon Linux 2023. Installing packages with dnf..."
     dnf update -y
-    if [ "${dbengine}" = "postgres" ]; then
-        dnf install -y ${COMMON_BUILD_PKGS} rubygem-bundler postgresql15-server postgresql15 libpq-devel
+    if [ "${webserver}" = "nginx" ]; then
+        WEB_PKGS="nginx"; web_user="nginx"
     else
-        dnf install -y ${COMMON_BUILD_PKGS} rubygem-bundler mariadb105-server mariadb105 mariadb105-devel
+        WEB_PKGS="httpd"; web_user="apache"
+    fi
+
+    if [ "${dbengine}" = "postgres" ]; then
+        dnf install -y ${COMMON_BUILD_PKGS} ${WEB_PKGS} rubygem-bundler postgresql15-server postgresql15 libpq-devel
+    else
+        dnf install -y ${COMMON_BUILD_PKGS} ${WEB_PKGS} rubygem-bundler mariadb105-server mariadb105 mariadb105-devel
     fi
 else
     echo "==> Detected Amazon Linux 2 (or legacy). Installing packages with yum..."
     yum update -y
-    if [ "${dbengine}" = "postgres" ]; then
-        if command -v amazon-linux-extras >/dev/null 2>&1; then
-            amazon-linux-extras install -y postgresql14 || true
-        fi
-        yum install -y ${COMMON_BUILD_PKGS} postgresql-server postgresql postgresql-devel
+    if command -v amazon-linux-extras >/dev/null 2>&1; then
+        [ "${webserver}" = "nginx" ] && amazon-linux-extras install -y nginx1 || true
+        [ "${dbengine}" = "postgres" ] && amazon-linux-extras install -y postgresql14 || true
+    fi
+
+    if [ "${webserver}" = "nginx" ]; then
+        WEB_PKGS="nginx"; web_user="nginx"
     else
-        yum install -y ${COMMON_BUILD_PKGS} mariadb-server mariadb mariadb-devel
+        WEB_PKGS="httpd"; web_user="apache"
+    fi
+
+    if [ "${dbengine}" = "postgres" ]; then
+        yum install -y ${COMMON_BUILD_PKGS} ${WEB_PKGS} postgresql-server postgresql postgresql-devel
+    else
+        yum install -y ${COMMON_BUILD_PKGS} ${WEB_PKGS} mariadb-server mariadb mariadb-devel
     fi
     gem install bundler --no-document || true
 fi
@@ -245,7 +264,7 @@ RAILS_ENV=production REDMINE_LANG=ja bundle exec rake redmine:load_default_data
 bundle add puma --skip-install || true
 bundle install
 
-chown -R apache:apache "${redmine_dir}"
+chown -R "${web_user}:${web_user}" "${redmine_dir}"
 
 # 5. systemd Service Setup for Puma
 echo "==> Configuring systemd service for Redmine (Puma)..."
@@ -256,8 +275,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=apache
-Group=apache
+User=${web_user}
+Group=${web_user}
 WorkingDirectory=${redmine_dir}
 Environment=RAILS_ENV=production
 ExecStart=/usr/local/bin/bundle exec puma -b tcp://127.0.0.1:${redmine_port} -e production
@@ -274,9 +293,27 @@ fi
 systemctl daemon-reload
 systemctl enable --now redmine.service
 
-# 6. Apache Reverse Proxy Configuration
-echo "==> Configuring Apache reverse proxy for Redmine..."
-cat << EOS > /etc/httpd/conf.d/redmine.conf
+# 6. Web Server (Reverse Proxy) Configuration
+echo "==> Configuring Web Server (${webserver}) as reverse proxy..."
+if [ "${webserver}" = "nginx" ]; then
+    cat << EOS > /etc/nginx/conf.d/redmine.conf
+server {
+    listen       80;
+    listen       [::]:80;
+    server_name  _;
+
+    location / {
+        proxy_pass         http://127.0.0.1:${redmine_port};
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+    }
+}
+EOS
+    systemctl enable --now nginx.service
+else
+    cat << EOS > /etc/httpd/conf.d/redmine.conf
 <VirtualHost *:80>
     ProxyPreserveHost On
     ProxyPass / http://127.0.0.1:${redmine_port}/
@@ -287,11 +324,11 @@ cat << EOS > /etc/httpd/conf.d/redmine.conf
     </Proxy>
 </VirtualHost>
 EOS
-
-echo "==> Starting Apache HTTP Server..."
-systemctl enable --now httpd.service
+    systemctl enable --now httpd.service
+fi
 
 echo "==> Redmine initial construction completed successfully!"
-echo "==> Database: ${db_adapter} (${dbmode})"
+echo "==> Web Server: ${webserver}"
+echo "==> Database  : ${db_adapter} (${dbmode})"
 echo "==> Access URL: http://${myip}/"
 echo "==> Initial Admin Login : admin / admin"

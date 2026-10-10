@@ -4,11 +4,16 @@ set -euo pipefail
 # ==============================================================================
 # AWS-Generic-UserData: Nextcloud Initial Construction Script
 # Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
+# Supported Web: Apache (httpd), Nginx (with PHP-FPM)
+# Supported DB: MariaDB, PostgreSQL (Local or RDS)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数で指定可能
+# 設定項目 (Settings) - スクリプト冒頭の編集、またはコマンド引数・環境変数で指定可能
 # ------------------------------------------------------------------------------
+# Web サーバー選択 (apache または nginx):
+webserver="${WEBSERVER:-apache}"                           # apache (デフォルト) または nginx
+
 # DB 種別 / エンジン指定:
 #   local / mariadb      : ローカル MariaDB (デフォルト)
 #   postgres             : ローカル PostgreSQL
@@ -32,7 +37,8 @@ data_dir="${DATA_DIR:-/var/www/nextcloud-data}"
 # ------------------------------------------------------------------------------
 # 内部処理 (Internal Logic)
 # ------------------------------------------------------------------------------
-# Parse DB engine and mode
+webserver="$(echo "${webserver}" | tr '[:upper:]' '[:lower:]')"
+
 arg1="$(echo "${db_selection}" | tr '[:upper:]' '[:lower:]')"
 if [ "${arg1}" = "postgres" ] || [ "${arg1}" = "postgresql" ] || [ "${arg1}" = "local-postgres" ]; then
     dbmode="local"; dbengine="postgres"
@@ -44,7 +50,7 @@ else
     dbmode="local"; dbengine="mariadb"
 fi
 
-echo "==> Starting Nextcloud initial construction (Engine: ${dbengine}, Mode: ${dbmode})..."
+echo "==> Starting Nextcloud initial construction (Web: ${webserver}, Engine: ${dbengine}, Mode: ${dbmode})..."
 
 # 1. Fetch Instance IP (IMDSv2 with IMDSv1 fallback)
 echo "==> Fetching instance IP address via IMDS..."
@@ -61,30 +67,48 @@ myip="${myip:-localhost}"
 echo "==> Instance IP resolved to: ${myip}"
 
 # 2. OS Detection & Package Installation
-COMMON_PHP_PKGS="httpd php php-cli php-common php-gd php-mbstring php-intl php-opcache php-xml php-zip php-bcmath php-gmp tar bzip2 unzip gzip"
+COMMON_PHP_PKGS="php php-cli php-common php-gd php-mbstring php-intl php-opcache php-xml php-zip php-bcmath php-gmp tar bzip2 unzip gzip"
 
 if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
     echo "==> Detected Amazon Linux 2023. Installing packages with dnf..."
     dnf update -y
-    if [ "${dbengine}" = "postgres" ]; then
-        dnf install -y ${COMMON_PHP_PKGS} php-pgsql postgresql15-server postgresql15
+    if [ "${webserver}" = "nginx" ]; then
+        WEB_PKGS="nginx php-fpm"; web_user="nginx"
     else
-        dnf install -y ${COMMON_PHP_PKGS} php-mysqlnd mariadb105-server mariadb105
+        WEB_PKGS="httpd"; web_user="apache"
+    fi
+
+    if [ "${dbengine}" = "postgres" ]; then
+        dnf install -y ${COMMON_PHP_PKGS} ${WEB_PKGS} php-pgsql postgresql15-server postgresql15
+    else
+        dnf install -y ${COMMON_PHP_PKGS} ${WEB_PKGS} php-mysqlnd mariadb105-server mariadb105
     fi
 else
     echo "==> Detected Amazon Linux 2 (or legacy). Installing packages with yum..."
     yum update -y
-    if [ "${dbengine}" = "postgres" ]; then
-        if command -v amazon-linux-extras >/dev/null 2>&1; then
-            amazon-linux-extras install -y lamp-mariadb10.2-php7.2 postgresql14 || true
-        fi
-        yum install -y ${COMMON_PHP_PKGS} php-pgsql postgresql-server postgresql
-    else
-        if command -v amazon-linux-extras >/dev/null 2>&1; then
-            amazon-linux-extras install -y lamp-mariadb10.2-php7.2 || true
-        fi
-        yum install -y ${COMMON_PHP_PKGS} php-mysqlnd mariadb-server mariadb
+    if command -v amazon-linux-extras >/dev/null 2>&1; then
+        amazon-linux-extras install -y lamp-mariadb10.2-php7.2 || true
+        [ "${webserver}" = "nginx" ] && amazon-linux-extras install -y nginx1 || true
+        [ "${dbengine}" = "postgres" ] && amazon-linux-extras install -y postgresql14 || true
     fi
+
+    if [ "${webserver}" = "nginx" ]; then
+        WEB_PKGS="nginx php-fpm"; web_user="nginx"
+    else
+        WEB_PKGS="httpd"; web_user="apache"
+    fi
+
+    if [ "${dbengine}" = "postgres" ]; then
+        yum install -y ${COMMON_PHP_PKGS} ${WEB_PKGS} php-pgsql postgresql-server postgresql
+    else
+        yum install -y ${COMMON_PHP_PKGS} ${WEB_PKGS} php-mysqlnd mariadb-server mariadb
+    fi
+fi
+
+# Configure PHP-FPM user when Nginx is selected
+if [ "${webserver}" = "nginx" ] && [ -f /etc/php-fpm.d/www.conf ]; then
+    sed -i 's/^user = apache/user = nginx/' /etc/php-fpm.d/www.conf 2>/dev/null || true
+    sed -i 's/^group = apache/group = nginx/' /etc/php-fpm.d/www.conf 2>/dev/null || true
 fi
 
 # Configure PHP settings recommended for Nextcloud
@@ -218,7 +242,7 @@ fi
 # 4. Download & Extract Nextcloud
 echo "==> Downloading Nextcloud archive..."
 mkdir -p "${data_dir}"
-chown -R apache:apache "${data_dir}"
+chown -R "${web_user}:${web_user}" "${data_dir}"
 chmod 770 "${data_dir}"
 
 cd /tmp
@@ -228,13 +252,13 @@ rm -rf /var/www/html/*
 cp -r nextcloud/* /var/www/html/
 rm -rf nextcloud nextcloud-latest.tar.bz2
 
-chown -R apache:apache /var/www/html
+chown -R "${web_user}:${web_user}" /var/www/html
 find /var/www/html -type d -exec chmod 755 {} \;
 find /var/www/html -type f -exec chmod 644 {} \;
 
 # 5. CLI Installation (occ maintenance:install)
 echo "==> Running Nextcloud CLI installation (${nc_dbtype})..."
-sudo -u apache /usr/bin/php /var/www/html/occ maintenance:install \
+sudo -u "${web_user}" /usr/bin/php /var/www/html/occ maintenance:install \
     --database="${nc_dbtype}" \
     --database-name="${dbname}" \
     --database-user="${dbuser}" \
@@ -246,25 +270,62 @@ sudo -u apache /usr/bin/php /var/www/html/occ maintenance:install \
 
 # Add instance IP to trusted_domains
 echo "==> Registering trusted domains..."
-sudo -u apache /usr/bin/php /var/www/html/occ config:system:set trusted_domains 1 --value="${myip}"
+sudo -u "${web_user}" /usr/bin/php /var/www/html/occ config:system:set trusted_domains 1 --value="${myip}"
 
-# 6. Apache Configuration & Cron Setup
-echo "==> Configuring Apache & Cron for Nextcloud..."
-cat << 'EOS' > /etc/httpd/conf.d/nextcloud.conf
+# 6. Web Server Configuration & Cron Setup
+echo "==> Configuring Web Server (${webserver}) & Cron for Nextcloud..."
+if [ "${webserver}" = "nginx" ]; then
+    cat << 'EOS' > /etc/nginx/conf.d/nextcloud.conf
+server {
+    listen       80;
+    listen       [::]:80;
+    server_name  _;
+    root         /var/www/html;
+    index        index.php index.html index.htm;
+
+    client_max_body_size 512M;
+
+    location / {
+        rewrite ^ /index.php;
+    }
+
+    location ~ ^\/(?:build|tests|config|lib|3rdparty|templates|data)\/ {
+        deny all;
+    }
+    location ~ ^\/(?:\.|autotest|occ|issue|indie|db_|console) {
+        deny all;
+    }
+
+    location ~ \.php(?:$|\/) {
+        fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+        set $path_info $fastcgi_path_info;
+        try_files $fastcgi_script_name =404;
+        include        fastcgi_params;
+        fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
+        fastcgi_param  PATH_INFO        $path_info;
+        fastcgi_param  HTTPS            off;
+        fastcgi_pass   unix:/run/php-fpm/www.sock;
+    }
+}
+EOS
+    systemctl enable --now php-fpm.service
+    systemctl enable --now nginx.service
+else
+    cat << 'EOS' > /etc/httpd/conf.d/nextcloud.conf
 <Directory "/var/www/html">
     AllowOverride All
     Require all granted
     Options -Indexes
 </Directory>
 EOS
+    systemctl enable --now httpd.service
+fi
 
-echo "*/5 * * * * apache /usr/bin/php -f /var/www/html/cron.php >/dev/null 2>&1" > /etc/cron.d/nextcloud
-sudo -u apache /usr/bin/php /var/www/html/occ background:cron
-
-echo "==> Starting Apache HTTP Server..."
-systemctl enable --now httpd.service
+echo "*/5 * * * * ${web_user} /usr/bin/php -f /var/www/html/cron.php >/dev/null 2>&1" > /etc/cron.d/nextcloud
+sudo -u "${web_user}" /usr/bin/php /var/www/html/occ background:cron
 
 echo "==> Nextcloud initial construction completed successfully!"
-echo "==> Database: ${nc_dbtype} (${dbmode})"
+echo "==> Web Server: ${webserver}"
+echo "==> Database  : ${nc_dbtype} (${dbmode})"
 echo "==> Access URL: http://${myip}/"
 echo "==> Admin User: ${dbuser}"
