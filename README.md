@@ -7,28 +7,55 @@ Amazon Linux 2023 (AL2023) および Amazon Linux 2 (AL2) に対応した汎用 
 
 ## 主な特徴 (Features)
 
-- **Amazon Linux 2023 (AL2023) ネイティブ対応**: `dnf` パッケージマネージャおよび最新パッケージ（Apache, MariaDB 10.5+, PHP 8.x, Ruby 3.x）をサポート。AL2 環境でも自動検出してフォールバック動作します。
+- **Amazon Linux 2023 (AL2023) ネイティブ対応**: `dnf` パッケージマネージャおよび最新パッケージ（Apache, Nginx, MariaDB 10.5+, PostgreSQL 15+, PHP 8.x, Ruby 3.x, Docker）をサポート。AL2 環境でも自動検出してフォールバック動作します。
 - **IMDSv2 (Instance Metadata Service v2) 対応**: セキュアなトークンベースのメタデータ取得により、最新の AWS セキュリティ基準に準拠。
-- **堅牢なデータベース設定**: `utf8mb4` (Unicode 絵文字対応) を標準採用、安全なランダムパスワード生成とクレデンシャルファイルパーミッション制限（`600`）。
+- **マルチ Web サーバー対応 (Apache / Nginx)**: WordPress, Moodle, Nextcloud, Redmine で **Apache または Nginx** を自由に選択可能。
+- **マルチデータベース対応 (MariaDB / PostgreSQL)**: 各種 Web アプリケーションで **MariaDB または PostgreSQL** を自由に選択可能（ローカル起動および Amazon RDS 接続に対応）。
+- **スクリプト冒頭の設定項目集約**: 全スクリプトの先頭部分に設定項目・デフォルト値・引数番号が一覧化されており、エディタ編集でも引数渡しでも簡単に設定可能。
 - **高速・安全なプロビジョニング**: `set -euo pipefail` によるエラーハンドリング、サービス即時起動（`systemctl enable --now`）、再起動待ちのないスムーズな起動完了。
 
 ---
 
 ## 提供スクリプト一覧 (Available Scripts)
 
-| スクリプト名 | 用途 | 主要スタック |
-|:---|:---|:---|
-| [`lamp-Initial_construction.sh`](#1-lamp-initial_constructionsh) | LAMP 汎用基盤 | Apache, PHP 8.x, MariaDB |
-| [`lamp-Initial_construction_wordpress.sh`](#2-lamp-initial_construction_wordpresssh) | ブログ / CMS | WordPress, WP-CLI, Apache, PHP, MariaDB |
-| [`lamp-Initial_construction_moodle.sh`](#3-lamp-initial_construction_moodlesh) | 学習管理システム (LMS) | Moodle, Apache, PHP 8.x, MariaDB, Cron |
-| [`lamp-Initial_construction_nextcloud.sh`](#4-lamp-initial_construction_nextcloudsh) | オンラインストレージ | Nextcloud, Apache, PHP OPcache, MariaDB |
-| [`initial_construction_redmine.sh`](#5-initial_construction_redminesh) | プロジェクト管理 | Redmine, Ruby, Puma (systemd), Apache, MariaDB |
+| スクリプト名 | 用途 | Web サーバー | データベース |
+|:---|:---|:---|:---|
+| [`docker-Initial_construction.sh`](#1-docker-initial_constructionsh) | コンテナホスト基盤 | - | - |
+| [`lamp-Initial_construction.sh`](#2-lamp-initial_constructionsh) | LAMP 汎用基盤 | Apache | MariaDB |
+| [`lemp-Initial_construction.sh`](#3-lemp-initial_constructionsh) | LEMP 高速 Web 基盤 | Nginx | MariaDB |
+| [`postgresql-Initial_construction.sh`](#4-postgresql-initial_constructionsh) | DB サーバー基盤 | - | PostgreSQL |
+| [`lamp-Initial_construction_wordpress.sh`](#5-lamp-initial_construction_wordpresssh) | ブログ / CMS | **Apache / Nginx** | MariaDB |
+| [`lamp-Initial_construction_moodle.sh`](#6-lamp-initial_construction_moodlesh) | 学習管理システム (LMS) | **Apache / Nginx** | **MariaDB / PostgreSQL** |
+| [`lamp-Initial_construction_nextcloud.sh`](#7-lamp-initial_construction_nextcloudsh) | オンラインストレージ | **Apache / Nginx** | **MariaDB / PostgreSQL** |
+| [`initial_construction_redmine.sh`](#8-initial_construction_redminesh) | プロジェクト管理 | **Apache / Nginx** | **MariaDB / PostgreSQL** |
+
+---
+
+## Web サーバーの切り替え方法 (Apache vs Nginx)
+
+WordPress, Moodle, Nextcloud, Redmine では、環境変数 `WEBSERVER` またはスクリプト冒頭の `webserver` 変数を指定することで、Web サーバーを **Apache** または **Nginx** に切り替えることができます。
+
+- **デフォルト**: `apache`
+- **Nginx を利用する場合**: 環境変数 `WEBSERVER=nginx` を指定して実行します。
+  ```bash
+  WEBSERVER=nginx curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_wordpress.sh | bash
+  ```
 
 ---
 
 ## 各スクリプトの仕様と引数
 
-### 1. `lamp-Initial_construction.sh`
+### 1. `docker-Initial_construction.sh`
+EC2 を Docker および Docker Compose が即座に使えるコンテナホストとしてセットアップします。`ec2-user` に権限が付与されているため、ログイン直後から `sudo` なしで `docker run` や `docker compose` コマンドを実行できます。
+
+```bash
+./docker-Initial_construction.sh [ユーザー名]
+```
+- `$1`: docker グループに追加するユーザー名 (デフォルト: `ec2-user`)
+
+---
+
+### 2. `lamp-Initial_construction.sh`
 Apache、PHP、MariaDB をインストールし、指定された初期データベース・ユーザーを作成します。
 
 ```bash
@@ -40,60 +67,96 @@ Apache、PHP、MariaDB をインストールし、指定された初期データ
 
 ---
 
-### 2. `lamp-Initial_construction_wordpress.sh`
-WordPress の最新日本語版（WP-CLI 経由）を自動ダウンロード・設定・インストールします。ローカル MariaDB および RDS 構成の両方に対応しています。
+### 3. `lemp-Initial_construction.sh`
+Nginx、PHP-FPM、MariaDB をインストールし、高速な LEMP 環境を構築します。
 
 ```bash
-./lamp-Initial_construction_wordpress.sh [DB種別] [DB名] [ユーザー名] [パスワード] [RDSエンドポイント] [RDSマスターユーザー] [RDSマスターパスワード]
+./lemp-Initial_construction.sh [DB名] [DBユーザー名] [DBパスワード]
+```
+- `$1`: DB名 (デフォルト: `lempdb`)
+- `$2`: DBユーザー名 (デフォルト: `lempuser`)
+- `$3`: DBパスワード (デフォルト: `lemppass`)
+
+---
+
+### 4. `postgresql-Initial_construction.sh`
+PostgreSQL 15+ 単体データベースサーバーを初期化し、初期データベース、ユーザー、パスワード、接続認証（`pg_hba.conf`）を設定します。
+
+```bash
+./postgresql-Initial_construction.sh [DB名] [DBユーザー名] [DBパスワード]
+```
+- `$1`: DB名 (デフォルト: `mydb`)
+- `$2`: DBユーザー名 (デフォルト: `myuser`)
+- `$3`: DBパスワード (デフォルト: `mypassword`)
+
+---
+
+### 5. `lamp-Initial_construction_wordpress.sh`
+WordPress の最新日本語版（WP-CLI 経由）を自動セットアップします。**Apache / Nginx** 両対応。
+
+```bash
+[WEBSERVER=nginx] ./lamp-Initial_construction_wordpress.sh [DB種別] [DB名] [ユーザー名] [パスワード] [RDSエンドポイント] [RDSマスターユーザー] [RDSマスターパスワード]
 ```
 - `$1`: DB種別 (`local` または `rds`, デフォルト: `local`)
 - `$2`: DB名 (デフォルト: `wpdb`)
-- `$3`: DBユーザー名 兼 WordPress 管理者 ID (デフォルト: `wpuser`)
-- `$4`: DBパスワード 兼 WordPress 管理者パスワード (デフォルト: `wppass`)
+- `$3`: DBユーザー名 兼 管理者 ID (デフォルト: `wpuser`)
+- `$4`: パスワード (デフォルト: `wppass`)
 - `$5`〜`$7`: RDS エンドポイント, マスターユーザー, パスワード（RDS 時のみ必須）
 
 ---
 
-### 3. `lamp-Initial_construction_moodle.sh`
-Moodle LMS の最新安定版を自動セットアップし、Moodle 用 PHP 設定、MariaDB 初期化、初期 CLI インストール、定期実行 cron を登録します。
+### 6. `lamp-Initial_construction_moodle.sh`
+Moodle LMS を自動セットアップします。**Apache / Nginx** および **MariaDB / PostgreSQL** の両方に対応しています。
 
 ```bash
-./lamp-Initial_construction_moodle.sh [DB種別] [DB名] [ユーザー名] [パスワード] [RDSエンドポイント] [RDSマスターユーザー] [RDSマスターパスワード]
+[WEBSERVER=nginx] ./lamp-Initial_construction_moodle.sh [DB指定] [DB名] [ユーザー名] [パスワード] [RDSエンドポイント] [RDSマスターユーザー] [RDSマスターパスワード]
 ```
-- `$1`: DB種別 (`local` または `rds`, デフォルト: `local`)
+- `$1`: DB指定
+  - `local` または `mariadb` (デフォルト: ローカル MariaDB)
+  - `postgres` (ローカル PostgreSQL)
+  - `rds` または `rds-mariadb` (Amazon RDS MariaDB/MySQL)
+  - `rds-postgres` (Amazon RDS PostgreSQL)
 - `$2`: DB名 (デフォルト: `moodledb`)
 - `$3`: DBユーザー名 兼 Moodle 管理者 ID (デフォルト: `moodleuser`)
-- `$4`: DBパスワード 兼 Moodle 管理者パスワード (デフォルト: `moodlepass`)
+- `$4`: パスワード (デフォルト: `moodlepass`)
 - `$5`〜`$7`: RDS エンドポイント, マスターユーザー, パスワード（RDS 時のみ必須）
 
 ---
 
-### 4. `lamp-Initial_construction_nextcloud.sh`
-Nextcloud オンラインストレージの最新安定版を自動展開し、最適化された OPcache 設定、`occ` CLI による無人インストール、`trusted_domains` の自動登録、バックグラウンド cron を設定します。
+### 7. `lamp-Initial_construction_nextcloud.sh`
+Nextcloud オンラインストレージを自動セットアップします。**Apache / Nginx** および **MariaDB / PostgreSQL** の両方に対応しています。
 
 ```bash
-./lamp-Initial_construction_nextcloud.sh [DB種別] [DB名] [ユーザー名] [パスワード] [RDSエンドポイント] [RDSマスターユーザー] [RDSマスターパスワード]
+[WEBSERVER=nginx] ./lamp-Initial_construction_nextcloud.sh [DB指定] [DB名] [ユーザー名] [パスワード] [RDSエンドポイント] [RDSマスターユーザー] [RDSマスターパスワード]
 ```
-- `$1`: DB種別 (`local` または `rds`, デフォルト: `local`)
+- `$1`: DB指定
+  - `local` または `mariadb` (デフォルト: ローカル MariaDB)
+  - `postgres` (ローカル PostgreSQL)
+  - `rds` または `rds-mariadb` (Amazon RDS MariaDB/MySQL)
+  - `rds-postgres` (Amazon RDS PostgreSQL)
 - `$2`: DB名 (デフォルト: `nextclouddb`)
-- `$3`: DBユーザー名 兼 Nextcloud 管理者 ID (デフォルト: `ncadmin`)
-- `$4`: DBパスワード 兼 Nextcloud 管理者パスワード (デフォルト: `ncpass123`)
+- `$3`: DBユーザー名 兼 管理者 ID (デフォルト: `ncadmin`)
+- `$4`: パスワード (デフォルト: `ncpass123`)
 - `$5`〜`$7`: RDS エンドポイント, マスターユーザー, パスワード（RDS 時のみ必須）
 
 ---
 
-### 5. `initial_construction_redmine.sh`
-Redmine プロジェクト管理ツールを自動構築します。Ruby 環境、Bundler による依存関係導入、MariaDB への DB マイグレーションと初期データ投入、Puma アプリケーションサーバー（systemd 常駐サービス）および Apache リバースプロキシを設定します。
+### 8. `initial_construction_redmine.sh`
+Redmine プロジェクト管理ツールを自動セットアップします。**Apache / Nginx** および **MariaDB / PostgreSQL** の両方に対応しています。
 
 ```bash
-./initial_construction_redmine.sh [DB種別] [DB名] [ユーザー名] [パスワード] [RDSエンドポイント] [RDSマスターユーザー] [RDSマスターパスワード]
+[WEBSERVER=nginx] ./initial_construction_redmine.sh [DB指定] [DB名] [ユーザー名] [パスワード] [RDSエンドポイント] [RDSマスターユーザー] [RDSマスターパスワード]
 ```
-- `$1`: DB種別 (`local` または `rds`, デフォルト: `local`)
+- `$1`: DB指定
+  - `local` または `mariadb` (デフォルト: ローカル MariaDB)
+  - `postgres` (ローカル PostgreSQL)
+  - `rds` または `rds-mariadb` (Amazon RDS MariaDB/MySQL)
+  - `rds-postgres` (Amazon RDS PostgreSQL)
 - `$2`: DB名 (デフォルト: `redminedb`)
 - `$3`: DBユーザー名 (デフォルト: `redmineuser`)
-- `$4`: DBパスワード (デフォルト: `redminepass`)
+- `$4`: パスワード (デフォルト: `redminepass`)
 - `$5`〜`$7`: RDS エンドポイント, マスターユーザー, パスワード（RDS 時のみ必須）
-- **初期管理者アカウント**: `admin` / `admin` (初回ログイン後に変更を求められます)
+- **初期管理者アカウント**: `admin` / `admin` (初回ログイン時に変更)
 
 ---
 
@@ -101,34 +164,49 @@ Redmine プロジェクト管理ツールを自動構築します。Ruby 環境�
 
 EC2 インスタンス作成時の「高度な詳細」>「ユーザーデータ (UserData)」に貼り付けて使用します。
 
-### WordPress の構築
+### WordPress (高速 Nginx 構成)
 ```bash
 #!/bin/bash
+export WEBSERVER=nginx
 curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_wordpress.sh | bash
 ```
 
-### Moodle LMS の構築
+### Nextcloud (Nginx + PostgreSQL 構成)
 ```bash
 #!/bin/bash
-curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_moodle.sh | bash -s local moodledb moodleadmin MyMoodlePass123!
+export WEBSERVER=nginx
+curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_nextcloud.sh | bash -s postgres nextclouddb ncadmin MyCloudPass123!
 ```
 
-### Nextcloud の構築
+### Redmine (Nginx + PostgreSQL 構成)
 ```bash
 #!/bin/bash
-curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_nextcloud.sh | bash -s local nextclouddb ncadmin MyCloudPass123!
+export WEBSERVER=nginx
+curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/initial_construction_redmine.sh | bash -s postgres redminedb redmineuser MyRedminePass123!
 ```
 
-### Redmine の構築
+### Moodle LMS (Apache + PostgreSQL 構成)
 ```bash
 #!/bin/bash
-curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/initial_construction_redmine.sh | bash
+curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction_moodle.sh | bash -s postgres moodledb moodleadmin MyMoodlePass123!
 ```
 
-### シンプルな LAMP サーバーの構築
+### Docker & Docker Compose ホストの構築
 ```bash
 #!/bin/bash
-curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lamp-Initial_construction.sh | bash -s myappdb myappuser MySecretPassword!
+curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/docker-Initial_construction.sh | bash
+```
+
+### LEMP スタック (Nginx + PHP + MariaDB) の構築
+```bash
+#!/bin/bash
+curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/lemp-Initial_construction.sh | bash -s myappdb myappuser MyStrongPass123!
+```
+
+### PostgreSQL データベースサーバーの構築
+```bash
+#!/bin/bash
+curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/postgresql-Initial_construction.sh | bash -s mydb myuser MySecurePass123!
 ```
 
 ---
@@ -136,7 +214,7 @@ curl -fsSL https://raw.githubusercontent.com/qryuu/AWS-Generic-UserData/master/l
 ## 認証情報とセキュリティ (Security Notes)
 
 - ローカル MariaDB の `root` パスワードはランダム生成され、`/home/ec2-user/.mysql.secrets` に保存されます（パーミッション `600`）。
-- `ec2-user` ユーザーは `/home/ec2-user/.my.cnf` を利用して `mysql` コマンドでパスワードなしログインが可能です。
+- ローカル PostgreSQL の接続情報は `/home/ec2-user/.pgpass` に保存されます（パーミッション `600`）。
 - 本番環境で運用する場合は、必ずデフォルトパスワードから十分な強度のパスワードへ変更してご利用ください。
 
 ---
