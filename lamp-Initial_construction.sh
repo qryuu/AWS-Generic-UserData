@@ -1,46 +1,140 @@
 #!/bin/bash
-#Setting value 設定値
-dbname= #DBname DB名
-dbuser= #DBUserName DBユーザ名
-dbpassword= #DBUserPassqword DBユーザパスワード
+set -euo pipefail
 
-##Package installation パッケージインストール
-yum update -y
-amazon-linux-extras install epel redis4.0 lamp-mariadb10.2-php7.2 -y
-yum install  httpd mariadb mariadb-server php-gd php-mbstring php-intl php-pecl-apcu php-mysqlnd php-pecl-redis php-opcache php-imagick php-zip php-dom -y
-yum update -y
+# ==============================================================================
+# AWS-Generic-UserData: LAMP Initial Construction Script
+# Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
+# ==============================================================================
 
-##maria db Start mariadb起動
-systemctl start mariadb.service
+# Setting value 設定値 (引数またはデフォルト値)
+dbname="${1:-lampdb}"          # DBname DB名
+dbuser="${2:-lampuser}"        # DBUserName DBユーザ名
+dbpassword="${3:-lamppass}"    # DBUserPassword DBユーザパスワード
 
-##maria root Random password generation ランダムパスワード生成
-vMySQLRootPasswd="$(cat /dev/urandom | tr -dc '[:alnum:]' | head -c 16 | tee -a /home/ec2-user/.mysql.secrets)"
+echo "==> Starting LAMP stack initial construction..."
 
-##MySql_secure_installation mariaDB 初期化
-mysql -u root --password= -e "
-    UPDATE mysql.user SET Password=PASSWORD('${vMySQLRootPasswd}') WHERE User='root';
+# ------------------------------------------------------------------------------
+# 1. OS Detection & Package Installation
+# ------------------------------------------------------------------------------
+if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
+    echo "==> Detected Amazon Linux 2023. Installing packages with dnf..."
+    dnf update -y
+    dnf install -y \
+        httpd \
+        mariadb105-server \
+        mariadb105 \
+        php \
+        php-cli \
+        php-common \
+        php-gd \
+        php-mbstring \
+        php-intl \
+        php-mysqlnd \
+        php-opcache \
+        php-xml \
+        tar \
+        gzip
+else
+    echo "==> Detected Amazon Linux 2 (or legacy). Installing packages with yum / amazon-linux-extras..."
+    yum update -y
+    if command -v amazon-linux-extras >/dev/null 2>&1; then
+        amazon-linux-extras install -y lamp-mariadb10.2-php7.2 || true
+    fi
+    yum install -y \
+        httpd \
+        mariadb \
+        mariadb-server \
+        php \
+        php-gd \
+        php-mbstring \
+        php-intl \
+        php-mysqlnd \
+        php-opcache \
+        php-dom \
+        php-xml \
+        tar \
+        gzip
+fi
+
+# ------------------------------------------------------------------------------
+# 2. MariaDB Service Startup & Initialization
+# ------------------------------------------------------------------------------
+echo "==> Starting MariaDB service..."
+systemctl enable --now mariadb.service
+
+# Generate secure random root password
+vMySQLRootPasswd="$(cat /dev/urandom | tr -dc '[:alnum:]' | head -c 24)"
+SECRET_FILE="/home/ec2-user/.mysql.secrets"
+echo "${vMySQLRootPasswd}" > "${SECRET_FILE}"
+chmod 600 "${SECRET_FILE}"
+chown ec2-user:ec2-user "${SECRET_FILE}" 2>/dev/null || true
+
+echo "==> Securing MariaDB installation..."
+# Set root password and remove insecure defaults (compatible with MariaDB 10.2 - 10.5+)
+mysql -u root -e "
+    ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${vMySQLRootPasswd}');
     DELETE FROM mysql.user WHERE User='';
     DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+    DROP DATABASE IF EXISTS test;
+    DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+    FLUSH PRIVILEGES;" 2>/dev/null || mysql -u root -e "
+    SET PASSWORD FOR 'root'@'localhost' = PASSWORD('${vMySQLRootPasswd}');
+    DELETE FROM mysql.user WHERE User='';
+    DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+    DROP DATABASE IF EXISTS test;
     DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
     FLUSH PRIVILEGES;"
 
-##Create empty database 初期DB作成
-echo [mysql] >> /home/ec2-user/my.cnf 
-echo host = localhost >> /home/ec2-user/my.cnf
-echo user = root >> /home/ec2-user/my.cnf
-dbrootpass() {
-cat /home/ec2-user/.mysql.secrets
-}
-dbrootpass=`dbrootpass`
-echo password = ${dbrootpass} >> /home/ec2-user/my.cnf
-echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@localhost identified by '${dbpassword}';" > /tmp/create.sql
-mysql --defaults-extra-file=/home/ec2-user/my.cnf < /tmp/create.sql
+# Create ec2-user .my.cnf for root CLI access
+CNF_FILE="/home/ec2-user/.my.cnf"
+cat << EOF > "${CNF_FILE}"
+[client]
+host = localhost
+user = root
+password = "${vMySQLRootPasswd}"
+EOF
+chmod 600 "${CNF_FILE}"
+chown ec2-user:ec2-user "${CNF_FILE}" 2>/dev/null || true
 
+# ------------------------------------------------------------------------------
+# 3. Create Database & Application User
+# ------------------------------------------------------------------------------
+echo "==> Creating initial database '${dbname}' and user '${dbuser}'..."
+TMP_SQL="$(mktemp /tmp/create_db.XXXXXX.sql)"
+trap 'rm -f "${TMP_SQL}"' EXIT
 
-##Auto start setting 自動起動設定
-systemctl enable httpd.service
-systemctl enable mariadb.service
-systemctl enable redis.service
+cat << EOF > "${TMP_SQL}"
+CREATE DATABASE IF NOT EXISTS \`${dbname}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${dbuser}'@'localhost' IDENTIFIED BY '${dbpassword}';
+GRANT ALL PRIVILEGES ON \`${dbname}\`.* TO '${dbuser}'@'localhost';
+FLUSH PRIVILEGES;
+EOF
 
-##OS Reboot OS再起動
-reboot
+mysql --defaults-extra-file="${CNF_FILE}" < "${TMP_SQL}"
+rm -f "${TMP_SQL}"
+
+# ------------------------------------------------------------------------------
+# 4. Apache Startup & Verification
+# ------------------------------------------------------------------------------
+echo "==> Starting Apache HTTP Server..."
+systemctl enable --now httpd.service
+
+# Create a sample index page
+if [ ! -f /var/www/html/index.php ] && [ ! -f /var/www/html/index.html ]; then
+    cat << 'EOF' > /var/www/html/index.php
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>LAMP Server Ready</title>
+</head>
+<body>
+    <h1>LAMP Server is running!</h1>
+    <p>PHP Version: <?php echo phpversion(); ?></p>
+</body>
+</html>
+EOF
+    chown apache:apache /var/www/html/index.php
+fi
+
+echo "==> LAMP construction completed successfully!"

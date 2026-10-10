@@ -1,0 +1,9 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Explicitly declare text files that must always use LF line endings
+*.sh text eol=lf
+
+# Documentation and markdown
+*.md text
+*.txt text

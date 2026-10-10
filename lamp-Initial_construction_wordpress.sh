@@ -1,85 +1,224 @@
 #!/bin/bash
-#Setting value 設定値
-usedb=${1:-local} #local or RDS
-dbname=${2:-wpdb} #DBname DB名
-dbuser=${3:-wpuser} #DBUserName DBユーザ名
-dbpassword=${4:-wppass} #DBUserPassqword DBユーザパスワード
-rdsnama=$5 #RDSエンドポイントを入力
-rdsuser=$6 #RDSMasterユーザ名
-rdspassword=$7 #RDSMasterパスワード
-myip=`curl -s http://169.254.169.254/latest/meta-data/public-ipv4`
+set -euo pipefail
 
-##Package installation パッケージインストール
-yum update -y
-amazon-linux-extras install epel redis4.0 lamp-mariadb10.2-php7.2 -y
-yum install  httpd mariadb mariadb-server php-gd php-mbstring php-intl php-pecl-apcu php-mysqlnd php-pecl-redis php-opcache php-imagick php-zip php-dom -y
-yum update -y
+# ==============================================================================
+# AWS-Generic-UserData: WordPress Initial Construction Script
+# Supported OS: Amazon Linux 2023 (recommended), Amazon Linux 2
+# ==============================================================================
 
-##maria db Start mariadb起動
-if [ ${usedb} = "local" ];then
-systemctl start mariadb.service
+# Arguments / Setting values
+usedb="$(echo "${1:-local}" | tr '[:upper:]' '[:lower:]')" # local or rds
+dbname="${2:-wpdb}"                                        # DB name
+dbuser="${3:-wpuser}"                                      # DB username / WP admin user
+dbpassword="${4:-wppass}"                                  # DB user password / WP admin password
+rdsendpoint="${5:-}"                                       # RDS endpoint (e.g. host or host:3306)
+rdsuser="${6:-}"                                           # RDS master user
+rdspassword="${7:-}"                                       # RDS master password
 
-##maria root Random password generation ランダムパスワード生成
-vMySQLRootPasswd="$(cat /dev/urandom | tr -dc '[:alnum:]' | head -c 16 | tee -a /home/ec2-user/.mysql.secrets)"
+echo "==> Starting WordPress initial construction (DB mode: ${usedb})..."
 
-##MySql_secure_installation mariaDB 初期化
-mysql -u root --password= -e "
-    UPDATE mysql.user SET Password=PASSWORD('${vMySQLRootPasswd}') WHERE User='root';
-    DELETE FROM mysql.user WHERE User='';
-    DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
-    DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
-    FLUSH PRIVILEGES;"
-
-##Create empty database 初期DB作成
-echo [mysql] >> /home/ec2-user/my.cnf 
-echo host = localhost >> /home/ec2-user/my.cnf
-echo user = root >> /home/ec2-user/my.cnf
-dbrootpass() {
-cat /home/ec2-user/.mysql.secrets
-}
-dbrootpass=`dbrootpass`
-echo password = ${dbrootpass} >> /home/ec2-user/my.cnf
-echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@localhost identified by '${dbpassword}';" > /tmp/create.sql
-mysql --defaults-extra-file=/home/ec2-user/my.cnf < /tmp/create.sql
-fi
-##WordPress インストール
-cd /home/ec2-user/
-curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-chmod +x wp-cli.phar
-mv wp-cli.phar /usr/local/bin/wp
-chown apache:apache /var/www/html/
-sudo -u apache /usr/local/bin/wp core download --locale=ja --path=/var/www/html
-if [ ${usedb} = "local" ];then
-sudo -u apache /usr/local/bin/wp core config --dbname=$dbname --dbuser=$dbuser --dbpass=$dbpassword --dbhost='localhost' --path=/var/www/html
+# ------------------------------------------------------------------------------
+# 1. Fetch Instance IP (IMDSv2 with IMDSv1 fallback)
+# ------------------------------------------------------------------------------
+echo "==> Fetching instance IP address via IMDS..."
+TOKEN="$(curl -s -S -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || true)"
+if [ -n "${TOKEN}" ]; then
+    myip="$(curl -s -S -H "X-aws-ec2-metadata-token: ${TOKEN}" http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)"
+    if [ -z "${myip}" ]; then
+        myip="$(curl -s -S -H "X-aws-ec2-metadata-token: ${TOKEN}" http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || true)"
+    fi
 else
-sudo -u apache /usr/local/bin/wp core config --dbname=$dbname --dbuser=$dbuser --dbpass=$dbpassword --dbhost=$rdsnama --path=/var/www/html
+    myip="$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || curl -s http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || true)"
 fi
+myip="${myip:-localhost}"
+echo "==> Instance IP resolved to: ${myip}"
 
-##DB作成
-if [ ${usedb} = "local" ];then
-echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@localhost identified by '${dbpassword}';" > /tmp/create.sql
-mysql --defaults-extra-file=/home/ec2-user/my.cnf < /tmp/create.sql
+# ------------------------------------------------------------------------------
+# 2. OS Detection & Package Installation
+# ------------------------------------------------------------------------------
+if grep -q 'Amazon Linux release 2023' /etc/system-release 2>/dev/null || ( [ -f /etc/os-release ] && grep -q 'VERSION_ID="2023"' /etc/os-release ); then
+    echo "==> Detected Amazon Linux 2023. Installing packages with dnf..."
+    dnf update -y
+    dnf install -y \
+        httpd \
+        mariadb105-server \
+        mariadb105 \
+        php \
+        php-cli \
+        php-common \
+        php-gd \
+        php-mbstring \
+        php-intl \
+        php-mysqlnd \
+        php-opcache \
+        php-xml \
+        tar \
+        gzip
 else
-echo [mysql] >> /home/ec2-user/rdsmy.cnf 
-echo host = $rdsnama >> /home/ec2-user/rdsmy.cnf
-echo user = $rdsuser >> /home/ec2-user/rdsmy.cnf
-echo password =  $rdspassword >> /home/ec2-user/rdsmy.cnf
-echo "create database ${dbname} character set utf8 collate utf8_bin; grant all privileges on ${dbname}.* to ${dbuser}@'%' identified by '${dbpassword}';" > /tmp/create.sql
-mysql --defaults-extra-file=/home/ec2-user/rdsmy.cnf < /tmp/create.sql
+    echo "==> Detected Amazon Linux 2 (or legacy). Installing packages with yum / amazon-linux-extras..."
+    yum update -y
+    if command -v amazon-linux-extras >/dev/null 2>&1; then
+        amazon-linux-extras install -y lamp-mariadb10.2-php7.2 || true
+    fi
+    yum install -y \
+        httpd \
+        mariadb \
+        mariadb-server \
+        php \
+        php-gd \
+        php-mbstring \
+        php-intl \
+        php-mysqlnd \
+        php-opcache \
+        php-dom \
+        php-xml \
+        tar \
+        gzip
 fi
 
-##Wordpress 初期作成
-sudo -u apache /usr/local/bin/wp core install --url=$myip --title='WordPress' --admin_name=$dbuser --admin_password=$dbpassword --admin_email='wordpress@example.net'  --path=/var/www/html
+# ------------------------------------------------------------------------------
+# 3. Database Preparation & User Creation
+# ------------------------------------------------------------------------------
+TMP_SQL="$(mktemp /tmp/wp_init_db.XXXXXX.sql)"
+trap 'rm -f "${TMP_SQL}"' EXIT
 
-cat << EOS | sudo tee /etc/httpd/conf.d/wordpress.conf
+if [ "${usedb}" = "local" ]; then
+    echo "==> Starting local MariaDB service..."
+    systemctl enable --now mariadb.service
+
+    # Generate secure random root password
+    vMySQLRootPasswd="$(cat /dev/urandom | tr -dc '[:alnum:]' | head -c 24)"
+    SECRET_FILE="/home/ec2-user/.mysql.secrets"
+    echo "${vMySQLRootPasswd}" > "${SECRET_FILE}"
+    chmod 600 "${SECRET_FILE}"
+    chown ec2-user:ec2-user "${SECRET_FILE}" 2>/dev/null || true
+
+    echo "==> Securing local MariaDB installation..."
+    mysql -u root -e "
+        ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${vMySQLRootPasswd}');
+        DELETE FROM mysql.user WHERE User='';
+        DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+        DROP DATABASE IF EXISTS test;
+        DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+        FLUSH PRIVILEGES;" 2>/dev/null || mysql -u root -e "
+        SET PASSWORD FOR 'root'@'localhost' = PASSWORD('${vMySQLRootPasswd}');
+        DELETE FROM mysql.user WHERE User='';
+        DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+        DROP DATABASE IF EXISTS test;
+        DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+        FLUSH PRIVILEGES;"
+
+    CNF_FILE="/home/ec2-user/.my.cnf"
+    cat << EOF > "${CNF_FILE}"
+[client]
+host = localhost
+user = root
+password = "${vMySQLRootPasswd}"
+EOF
+    chmod 600 "${CNF_FILE}"
+    chown ec2-user:ec2-user "${CNF_FILE}" 2>/dev/null || true
+
+    echo "==> Creating WordPress local database and user..."
+    cat << EOF > "${TMP_SQL}"
+CREATE DATABASE IF NOT EXISTS \`${dbname}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${dbuser}'@'localhost' IDENTIFIED BY '${dbpassword}';
+GRANT ALL PRIVILEGES ON \`${dbname}\`.* TO '${dbuser}'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+    mysql --defaults-extra-file="${CNF_FILE}" < "${TMP_SQL}"
+    wp_dbhost="localhost"
+
+elif [ "${usedb}" = "rds" ]; then
+    if [ -z "${rdsendpoint}" ] || [ -z "${rdsuser}" ] || [ -z "${rdspassword}" ]; then
+        echo "ERROR: RDS mode requires endpoint, rdsuser, and rdspassword arguments." >&2
+        exit 1
+    fi
+    echo "==> Configuring remote RDS database connection..."
+    rdshost="${rdsendpoint%%:*}"
+    rdsport="${rdsendpoint##*:}"
+    if [ "${rdshost}" = "${rdsport}" ]; then
+        rdsport="3306"
+    fi
+
+    RDS_CNF="/home/ec2-user/.rdsmy.cnf"
+    cat << EOF > "${RDS_CNF}"
+[client]
+host = ${rdshost}
+port = ${rdsport}
+user = ${rdsuser}
+password = "${rdspassword}"
+EOF
+    chmod 600 "${RDS_CNF}"
+    chown ec2-user:ec2-user "${RDS_CNF}" 2>/dev/null || true
+
+    echo "==> Creating WordPress database and user on RDS..."
+    cat << EOF > "${TMP_SQL}"
+CREATE DATABASE IF NOT EXISTS \`${dbname}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${dbuser}'@'%' IDENTIFIED BY '${dbpassword}';
+GRANT ALL PRIVILEGES ON \`${dbname}\`.* TO '${dbuser}'@'%';
+FLUSH PRIVILEGES;
+EOF
+    mysql --defaults-extra-file="${RDS_CNF}" < "${TMP_SQL}"
+    wp_dbhost="${rdsendpoint}"
+else
+    echo "ERROR: Invalid DB type '${usedb}'. Specify 'local' or 'rds'." >&2
+    exit 1
+fi
+
+rm -f "${TMP_SQL}"
+
+# ------------------------------------------------------------------------------
+# 4. Install WP-CLI & Setup WordPress
+# ------------------------------------------------------------------------------
+echo "==> Installing WP-CLI..."
+curl -sS -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+chmod +x /usr/local/bin/wp
+
+echo "==> Downloading WordPress Japanese package..."
+mkdir -p /var/www/html
+chown -R apache:apache /var/www/html
+/usr/local/bin/wp core download --locale=ja --path=/var/www/html --allow-root
+
+echo "==> Generating wp-config.php..."
+/usr/local/bin/wp core config \
+    --dbname="${dbname}" \
+    --dbuser="${dbuser}" \
+    --dbpass="${dbpassword}" \
+    --dbhost="${wp_dbhost}" \
+    --dbcharset="utf8mb4" \
+    --dbcollate="utf8mb4_unicode_ci" \
+    --path=/var/www/html \
+    --allow-root
+
+echo "==> Installing WordPress Core..."
+/usr/local/bin/wp core install \
+    --url="http://${myip}" \
+    --title="WordPress" \
+    --admin_user="${dbuser}" \
+    --admin_password="${dbpassword}" \
+    --admin_email="wordpress@example.net" \
+    --path=/var/www/html \
+    --skip-email \
+    --allow-root
+
+# ------------------------------------------------------------------------------
+# 5. Apache Configuration & Permissions
+# ------------------------------------------------------------------------------
+echo "==> Configuring Apache for WordPress..."
+cat << 'EOS' > /etc/httpd/conf.d/wordpress.conf
 <Directory "/var/www/html">
     AllowOverride All
+    Require all granted
 </Directory>
 EOS
 
-##Auto start setting 自動起動設定
-systemctl enable httpd.service
-systemctl enable mariadb.service
+chown -R apache:apache /var/www/html
+find /var/www/html -type d -exec chmod 755 {} \;
+find /var/www/html -type f -exec chmod 644 {} \;
 
-##OS Reboot OS再起動
-reboot
+echo "==> Starting Apache HTTP Server..."
+systemctl enable --now httpd.service
+
+echo "==> WordPress initial construction completed successfully!"
+echo "==> Access URL: http://${myip}/"
+echo "==> Admin URL : http://${myip}/wp-admin"
